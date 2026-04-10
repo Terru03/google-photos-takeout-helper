@@ -46,6 +46,10 @@ func Main() {
 	monthSubfolders := flag.Bool("month-subfolders", false, "Create month subfolders (1-12) inside year folders")
 	flatten := flag.Bool("flatten", false, "Put all media files directly in the output folder without year/album subfolders")
 	restoreMOV := flag.Bool("restore-mov", false, "Restore .MOV file extension in case the Major Brand EXIF field says \"Apple QuickTime (.MOV/QT)\"")
+	dryRun := flag.Bool("dry-run", false, "Plan the run and generate an audit report without writing files")
+	verifyWrites := flag.Bool("verify", false, "Verify written metadata by reading it back with ExifTool")
+	noDeduplicate := flag.Bool("no-deduplicate", false, "Keep duplicate files instead of linking or reusing exact matches")
+	conflictPolicyValue := flag.String("conflict-policy", string(fixer.ConflictPreferJSON), "How to handle conflicts between embedded metadata and Takeout JSON: prefer-json, prefer-embedded, merge")
 
 	flag.Parse()
 
@@ -77,6 +81,12 @@ func Main() {
 		os.Exit(1)
 	}
 
+	conflictPolicy, err := fixer.ParseConflictPolicy(*conflictPolicyValue)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
 	progressCh := make(chan fixer.Progress)
 
 	options := fixer.ProcessOptions{
@@ -86,6 +96,10 @@ func Main() {
 		IgnoreAlbums:        *ignoreAlbums,
 		MonthSubfolders:     *monthSubfolders,
 		RestoreMOVExtension: *restoreMOV,
+		Deduplicate:         !*noDeduplicate,
+		DryRun:              *dryRun,
+		VerifyWrites:        *verifyWrites,
+		ConflictPolicy:      conflictPolicy,
 	}
 
 	go func() {

@@ -20,9 +20,12 @@ This can lead to problems:
 
 ## Solution
 GoogleTakeoutFixer solves these issues by:
-- **Writing EXIF metadata** directly into your media.
-- **Organizing your files** into a clear and structured folder structure for easier navigation.
-- **Automatically removing unnecessary JSON files**.
+- **Writing metadata** into photos and videos using Google Takeout JSON data.
+- **Matching media to sidecars deterministically**, including duplicate suffixes, edited variants, long-name truncation, and live photo partner files.
+- **Deduplicating exact duplicate media** across year and album folders by reusing the first output copy instead of storing duplicates again.
+- **Resuming safely** with a persisted state file so failed runs can continue instead of restarting from scratch.
+- **Producing audit reports** with matched, unmatched, ambiguous, duplicate, conflict, and verification results.
+- **Verifying metadata after write** when requested, so the tool can prove what actually landed in the file.
 
 ## Preview
 <p align="center">
@@ -86,13 +89,22 @@ You can also use GoogleTakeoutFixer through the CLI. Use the following flags:
 - `--month-subfolders`: Create month subfolders (labeled 1-12) inside of folders
 - `--flatten`: Flatten the folder structure and put all files directly in the output folder
 - `--restore-mov`: Restore .MOV file extension in case the Major Brand EXIF field says \"Apple QuickTime (.MOV/QT)\" (See #2)
+- `--dry-run`: Plan the run and emit reports without writing files
+- `--verify`: Read metadata back with ExifTool after writing to validate the result
+- `--no-deduplicate`: Keep exact duplicate files instead of linking or reusing them
+- `--conflict-policy prefer-json|prefer-embedded|merge`: Choose how JSON and embedded metadata conflicts are resolved
 - `--version`: Show version
 - `--help`: Show help message
 
 Example usage:
 ```sh
-./GoogleTakeoutFixer --input "/path/to/takeout/Google Photos/" --output "/path/to/output/folder/" --symlink
-``` 
+./GoogleTakeoutFixer --input "/path/to/takeout/Google Photos/" --output "/path/to/output/folder/" --verify
+```
+
+During each run, the tool writes resumable state and audit artifacts under `OUTPUT/.gtf/`:
+- `state.jsonl`: append-only processing state used for resumable/idempotent runs
+- `reports/latest.txt`: human-readable audit summary
+- `reports/latest.json`: detailed machine-readable report
 
 You might have to give the executable permissions to run on Linux and macOS using `chmod +x GoogleTakeoutFixer` before you can run it through the terminal.
 
@@ -106,13 +118,20 @@ To run the GUI, make sure you have the necessary dependencies for Fyne installed
 git clone https://github.com/feloex/GoogleTakeoutFixer.git
 cd GoogleTakeoutFixer
 
-# cd into the entrypoint directory and run the main.go file
-cd cmd
-go run .
+# run the hybrid desktop app / CLI entrypoint
+go run ./cmd
+
+# build a standalone CLI binary
+go build ./cmd/gtf-cli
+
+# build Windows binaries into ./dist
+powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 ```
 
 ## Credits
 This project modifies metadata using the [ExifTool](https://exiftool.org/) library by **Phil Harvey**. ExifTool is licensed under the Perl Artistic license, or the GNU General Public License (see [here](https://exiftool.org/#license) for more details).
+
+Matching behavior and product direction were also informed by other Google Takeout repair tools, especially `gophix`, but this codebase maintains its own implementation and state/reporting model.
 
 ## Donate
 This software is completely free. You are free to use, modify, and distribute it. If you'd like to support my work, you can donate via my monero adress. Remember that donating is completely optional.

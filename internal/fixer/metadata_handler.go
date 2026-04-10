@@ -1,58 +1,111 @@
-/*
-GoogleTakeoutFixer - A tool to easily clean and organize Google Photos Takeout exports
-Copyright (C) 2026 feloex
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
-*/
-
 package fixer
 
 import (
-	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	_ "time/tzdata"
 
 	"github.com/bradfitz/latlong"
 )
 
-// Struct to hold the structure of the JSON metadata
-type imageMetadata struct {
-	Title          string `json:"title"`
-	Description    string `json:"description"`
-	PhotoTakenTime struct {
-		Timestamp string `json:"timestamp"`
-		Formatted string `json:"formatted"`
-	} `json:"photoTakenTime"`
-	GeoData struct {
-		Latitude  float64 `json:"latitude"`
-		Longitude float64 `json:"longitude"`
-		Altitude  float64 `json:"altitude"`
-	} `json:"geoData"`
+type takeoutTimestamp struct {
+	Timestamp string `json:"timestamp"`
+	Formatted string `json:"formatted"`
 }
 
-// Reads JSON and returns some of its metadata contents using the imageMetadata struct
+type takeoutGeoData struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	Altitude  float64 `json:"altitude"`
+}
+
+type imageMetadata struct {
+	Title          string           `json:"title"`
+	Description    string           `json:"description"`
+	CreationTime   takeoutTimestamp `json:"creationTime"`
+	PhotoTakenTime takeoutTimestamp `json:"photoTakenTime"`
+	GeoData        takeoutGeoData   `json:"geoData"`
+	GeoDataExif    takeoutGeoData   `json:"geoDataExif"`
+}
+
+type embeddedMetadata struct {
+	CaptureTime time.Time
+	Offset      string
+	Title       string
+	Description string
+	GPS         takeoutGeoData
+}
+
+type metadataPlan struct {
+	CaptureUTC       time.Time
+	CaptureLocal     time.Time
+	Offset           string
+	GPS              takeoutGeoData
+	Title            string
+	Description      string
+	WriteTimestamp   bool
+	WriteGPS         bool
+	WriteTitle       bool
+	WriteDescription bool
+	Conflicts        []MetadataFieldConflict
+}
+
+type MetadataExpectation struct {
+	CaptureUTC  *time.Time
+	GPS         *takeoutGeoData
+	Title       string
+	Description string
+}
+
+type MetadataApplyResult struct {
+	MetadataWritten bool
+	MetadataPlan    MetadataExpectation
+	Conflicts       []MetadataFieldConflict
+	UsedXMPSidecar  bool
+}
+
+func (m imageMetadata) BestTitle() string {
+	return strings.TrimSpace(m.Title)
+}
+
+func (m imageMetadata) BestDescription() string {
+	return strings.TrimSpace(m.Description)
+}
+
+func (m imageMetadata) BestGeo() takeoutGeoData {
+	if m.GeoData.Latitude != 0 || m.GeoData.Longitude != 0 || m.GeoData.Altitude != 0 {
+		return m.GeoData
+	}
+	return m.GeoDataExif
+}
+
+func (m imageMetadata) BestTimestamp() (time.Time, error) {
+	for _, candidate := range []string{
+		strings.TrimSpace(m.PhotoTakenTime.Timestamp),
+		strings.TrimSpace(m.CreationTime.Timestamp),
+	} {
+		if candidate == "" {
+			continue
+		}
+		timestampInt, err := strconv.ParseInt(candidate, 10, 64)
+		if err != nil {
+			continue
+		}
+		return time.Unix(timestampInt, 0).UTC(), nil
+	}
+
+	return time.Time{}, fmt.Errorf("takeout JSON has no usable timestamp")
+}
+
 func ReadJsonMetadata(jsonPath string) (imageMetadata, error) {
 	var data imageMetadata
 
@@ -70,13 +123,12 @@ func ReadJsonMetadata(jsonPath string) (imageMetadata, error) {
 	return data, json.Unmarshal(byteValue, &data)
 }
 
-// Helper to find exiftool (bundled or in PATH)
 func getExifToolPath() string {
 	exePath, err := os.Executable()
 	if err == nil {
 		dir := filepath.Dir(exePath)
 		exifName := "exiftool"
-		if runtime.GOOS == "windows" {
+		if strings.EqualFold(filepath.Ext(exePath), ".exe") {
 			exifName = "exiftool.exe"
 		}
 		bundledPath := filepath.Join(dir, exifName)
@@ -87,189 +139,379 @@ func getExifToolPath() string {
 	return "exiftool"
 }
 
-// Start a persistent exiftool process
 func InitializeExifTool() error {
-	exifToolMutex.Lock()
-	defer exifToolMutex.Unlock()
-
-	if exifToolCmd != nil {
-		// Already initialized
-		return nil
-	}
-
-	exifToolCmd = exec.Command(getExifToolPath(), "-stay_open", "True", "-@", "-")
-
-	var err error = nil
-	exifToolStdin, err = exifToolCmd.StdinPipe()
-	if err != nil {
-		return err
-	}
-
-	exifToolStdout, err = exifToolCmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	exifToolScanner = bufio.NewScanner(exifToolStdout)
-
-	if err := exifToolCmd.Start(); err != nil {
-		return err
-	}
-
-	return nil
+	_, err := exec.LookPath(getExifToolPath())
+	return err
 }
 
-// Close the persistent exiftool process
-func CloseExifTool() {
-	exifToolMutex.Lock()
-	defer exifToolMutex.Unlock()
+func CloseExifTool() {}
 
-	if exifToolCmd != nil {
-		exifToolStdin.Write([]byte("-stay_open\nFalse\n"))
-		exifToolCmd.Wait()
-		exifToolCmd = nil
+func runExifTool(args ...string) ([]byte, error) {
+	cmd := exec.Command(getExifToolPath(), args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return output, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
 	}
+	return output, nil
 }
 
-// Apply all available metadata to a file
-func ApplyMetadata(filePath string, meta imageMetadata) error {
-	timestampInt, err := strconv.ParseInt(meta.PhotoTakenTime.Timestamp, 10, 64)
+func ApplyMetadata(filePath string, meta imageMetadata, policy ConflictPolicy) (MetadataApplyResult, error) {
+	plan, err := buildMetadataPlan(meta, policy, filePath)
 	if err != nil {
-		return fmt.Errorf("invalid timestamp: %v", err)
+		return MetadataApplyResult{}, err
 	}
 
-	utcTime := time.Unix(timestampInt, 0).UTC()
-
-	// Determine timezone at the photo's GPS location.
-	photoLoc := getPhotoTimezone(meta.GeoData.Latitude, meta.GeoData.Longitude)
-	localTime := utcTime.In(photoLoc)
-	_, offsetSec := localTime.Zone()
-	offsetStr := formatTimezoneOffset(offsetSec)
-
-	exifTime := localTime.Format("2006:01:02 15:04:05")
-	// exiftime with timezone
-	exifTimeWithTZ := exifTime + offsetStr
-
-	args := []string{
-		"-overwrite_original",
-		"-AllDates=" + exifTimeWithTZ,
-		"-TrackCreateDate=" + exifTimeWithTZ,
-		"-MediaCreateDate=" + exifTimeWithTZ,
-		"-FileCreateDate=" + exifTimeWithTZ,
-		"-FileModifyDate=" + exifTimeWithTZ,
-		"-OffsetTime=" + offsetStr,
-		"-OffsetTimeOriginal=" + offsetStr,
-		"-OffsetTimeDigitized=" + offsetStr,
+	result := MetadataApplyResult{
+		Conflicts: plan.Conflicts,
 	}
 
-	// If a title exists, add it to args
-	if meta.Title != "" {
-		args = append(args, "-Title="+meta.Title)
+	args := []string{"-overwrite_original", "-charset", "filename=utf8"}
+	if IsVideoFile(filePath) {
+		args = append(args, "-api", "QuickTimeUTC")
 	}
 
-	// If a description exists, add it to args
-	if meta.Description != "" {
-		args = append(args, "-ImageDescription="+meta.Description, "-Caption-Abstract="+meta.Description)
-	}
+	if plan.WriteTimestamp {
+		localValue := plan.CaptureLocal.Format("2006:01:02 15:04:05")
+		localValueWithTZ := localValue + plan.Offset
+		utcValue := plan.CaptureUTC.Format("2006:01:02 15:04:05")
 
-	// If geodata exists, add it to args
-	// EXIF uses N E S W for geodata
-	if meta.GeoData.Latitude != 0 && meta.GeoData.Longitude != 0 {
-		lat, lon := meta.GeoData.Latitude, meta.GeoData.Longitude
-
-		latRef, lonRef := "N", "E"
-		if lat < 0 {
-			latRef = "S"
+		if IsVideoFile(filePath) {
+			args = append(args,
+				"-Keys:CreationDate="+localValueWithTZ,
+				"-QuickTime:CreateDate="+utcValue,
+				"-QuickTime:ModifyDate="+utcValue,
+				"-TrackCreateDate="+utcValue,
+				"-TrackModifyDate="+utcValue,
+				"-MediaCreateDate="+utcValue,
+				"-MediaModifyDate="+utcValue,
+				"-FileCreateDate="+localValueWithTZ,
+				"-FileModifyDate="+localValueWithTZ,
+			)
+		} else {
+			args = append(args,
+				"-AllDates="+localValue,
+				"-OffsetTime="+plan.Offset,
+				"-OffsetTimeOriginal="+plan.Offset,
+				"-OffsetTimeDigitized="+plan.Offset,
+				"-FileCreateDate="+localValueWithTZ,
+				"-FileModifyDate="+localValueWithTZ,
+			)
 		}
-		if lon < 0 {
-			lonRef = "W"
-		}
+	}
 
+	if plan.WriteGPS {
+		coordinates := fmt.Sprintf("%.7f %.7f %.2f", plan.GPS.Latitude, plan.GPS.Longitude, plan.GPS.Altitude)
+		if IsVideoFile(filePath) {
+			args = append(args,
+				"-Keys:GPSCoordinates="+coordinates,
+				"-XMP-exif:GPSLatitude="+fmt.Sprintf("%.7f", plan.GPS.Latitude),
+				"-XMP-exif:GPSLongitude="+fmt.Sprintf("%.7f", plan.GPS.Longitude),
+				"-XMP-exif:GPSAltitude="+fmt.Sprintf("%.2f", plan.GPS.Altitude),
+			)
+		} else {
+			latRef, lonRef := "N", "E"
+			if plan.GPS.Latitude < 0 {
+				latRef = "S"
+			}
+			if plan.GPS.Longitude < 0 {
+				lonRef = "W"
+			}
+			args = append(args,
+				"-GPSLatitude="+fmt.Sprintf("%.7f", math.Abs(plan.GPS.Latitude)),
+				"-GPSLatitudeRef="+latRef,
+				"-GPSLongitude="+fmt.Sprintf("%.7f", math.Abs(plan.GPS.Longitude)),
+				"-GPSLongitudeRef="+lonRef,
+				"-GPSAltitude="+fmt.Sprintf("%.2f", plan.GPS.Altitude),
+				"-XMP-exif:GPSLatitude="+fmt.Sprintf("%.7f", plan.GPS.Latitude),
+				"-XMP-exif:GPSLongitude="+fmt.Sprintf("%.7f", plan.GPS.Longitude),
+				"-XMP-exif:GPSAltitude="+fmt.Sprintf("%.2f", plan.GPS.Altitude),
+			)
+		}
+	}
+
+	if plan.WriteTitle {
 		args = append(args,
-			fmt.Sprintf("-GPSLatitude=%f", math.Abs(lat)),
-			fmt.Sprintf("-GPSLatitudeRef=%s", latRef),
-			fmt.Sprintf("-GPSLongitude=%f", math.Abs(lon)),
-			fmt.Sprintf("-GPSLongitudeRef=%s", lonRef),
-			fmt.Sprintf("-GPSAltitude=%f", meta.GeoData.Altitude),
+			"-Title="+plan.Title,
+			"-XMP-dc:Title="+plan.Title,
+		)
+		if IsVideoFile(filePath) {
+			args = append(args, "-Keys:Title="+plan.Title)
+		}
+	}
+
+	if plan.WriteDescription {
+		args = append(args,
+			"-Description="+plan.Description,
+			"-ImageDescription="+plan.Description,
+			"-Caption-Abstract="+plan.Description,
+			"-XMP-dc:Description="+plan.Description,
 		)
 	}
 
+	if !plan.WriteTimestamp && !plan.WriteGPS && !plan.WriteTitle && !plan.WriteDescription {
+		return result, nil
+	}
+
 	args = append(args, filePath)
-
-	// Use the persistent exiftool instance
-	exifToolMutex.Lock()
-	defer exifToolMutex.Unlock()
-
-	if exifToolCmd == nil {
-		return fmt.Errorf("Exiftool is not initialized")
+	if _, err := runExifTool(args...); err != nil {
+		return result, err
 	}
 
-	command := strings.Join(args, "\n") + "\n-execute\n"
-	if _, err := exifToolStdin.Write([]byte(command)); err != nil {
-		return fmt.Errorf("Failed to write to exiftool: %v", err)
+	if plan.WriteTimestamp {
+		_ = TouchWithCaptureTime(filePath, plan.CaptureUTC)
 	}
 
-	var exifErr error
-	for exifToolScanner.Scan() {
-		line := exifToolScanner.Text()
-		if line == "{ready}" {
-			break
+	result.MetadataWritten = true
+	result.MetadataPlan = plan.expectation()
+	return result, nil
+}
+
+func buildMetadataPlan(meta imageMetadata, policy ConflictPolicy, filePath string) (metadataPlan, error) {
+	embedded, _ := ReadEmbeddedMetadata(filePath)
+	plan := metadataPlan{}
+
+	plan.Title = meta.BestTitle()
+	plan.Description = meta.BestDescription()
+	plan.GPS = meta.BestGeo()
+
+	captureUTC, err := meta.BestTimestamp()
+	if err == nil {
+		location := resolveCaptureLocation(plan.GPS, embedded)
+		plan.CaptureUTC = captureUTC
+		plan.CaptureLocal = captureUTC.In(location)
+		_, offsetSec := plan.CaptureLocal.Zone()
+		plan.Offset = formatTimezoneOffset(offsetSec)
+	}
+
+	plan.Conflicts = detectConflicts(meta, embedded)
+
+	switch policy {
+	case ConflictPreferEmbedded:
+		plan.WriteTimestamp = !plan.CaptureUTC.IsZero() && embedded.CaptureTime.IsZero()
+		plan.WriteGPS = hasGeo(plan.GPS) && !hasGeo(embedded.GPS)
+		plan.WriteTitle = plan.Title != "" && strings.TrimSpace(embedded.Title) == ""
+		plan.WriteDescription = plan.Description != "" && strings.TrimSpace(embedded.Description) == ""
+	case ConflictMerge:
+		plan.WriteTimestamp = !plan.CaptureUTC.IsZero()
+		plan.WriteGPS = hasGeo(plan.GPS)
+		plan.WriteTitle = plan.Title != "" && strings.TrimSpace(embedded.Title) == ""
+		plan.WriteDescription = plan.Description != "" && strings.TrimSpace(embedded.Description) == ""
+	default:
+		plan.WriteTimestamp = !plan.CaptureUTC.IsZero()
+		plan.WriteGPS = hasGeo(plan.GPS)
+		plan.WriteTitle = plan.Title != ""
+		plan.WriteDescription = plan.Description != ""
+	}
+
+	return plan, nil
+}
+
+func (p metadataPlan) expectation() MetadataExpectation {
+	expectation := MetadataExpectation{
+		Title:       p.Title,
+		Description: p.Description,
+	}
+	if p.WriteTimestamp {
+		captureUTC := p.CaptureUTC
+		expectation.CaptureUTC = &captureUTC
+	}
+	if p.WriteGPS {
+		gps := p.GPS
+		expectation.GPS = &gps
+	}
+	if !p.WriteTitle {
+		expectation.Title = ""
+	}
+	if !p.WriteDescription {
+		expectation.Description = ""
+	}
+	return expectation
+}
+
+func ReadEmbeddedMetadata(filePath string) (embeddedMetadata, error) {
+	var result embeddedMetadata
+
+	output, err := runExifTool(
+		"-j",
+		"-n",
+		"-api", "QuickTimeUTC",
+		"-charset", "filename=utf8",
+		"-DateTimeOriginal",
+		"-CreateDate",
+		"-QuickTime:CreateDate",
+		"-TrackCreateDate",
+		"-MediaCreateDate",
+		"-Keys:CreationDate",
+		"-OffsetTime",
+		"-OffsetTimeOriginal",
+		"-Title",
+		"-Description",
+		"-ImageDescription",
+		"-Caption-Abstract",
+		"-GPSLatitude",
+		"-GPSLongitude",
+		"-GPSAltitude",
+		filePath,
+	)
+	if err != nil {
+		return result, err
+	}
+
+	var payload []map[string]interface{}
+	if err := json.Unmarshal(output, &payload); err != nil {
+		return result, err
+	}
+	if len(payload) == 0 {
+		return result, nil
+	}
+
+	row := payload[0]
+	result.Offset = firstNonEmptyString(
+		toString(row["OffsetTimeOriginal"]),
+		toString(row["OffsetTime"]),
+	)
+	result.Title = firstNonEmptyString(toString(row["Title"]))
+	result.Description = firstNonEmptyString(
+		toString(row["Description"]),
+		toString(row["ImageDescription"]),
+		toString(row["Caption-Abstract"]),
+	)
+	result.GPS = takeoutGeoData{
+		Latitude:  toFloat(row["GPSLatitude"]),
+		Longitude: toFloat(row["GPSLongitude"]),
+		Altitude:  toFloat(row["GPSAltitude"]),
+	}
+
+	rawTime := firstNonEmptyString(
+		toString(row["DateTimeOriginal"]),
+		toString(row["Keys:CreationDate"]),
+		toString(row["CreateDate"]),
+		toString(row["QuickTime:CreateDate"]),
+		toString(row["TrackCreateDate"]),
+		toString(row["MediaCreateDate"]),
+	)
+	if rawTime != "" {
+		if parsed, err := parseFlexibleExifTime(rawTime, result.Offset); err == nil {
+			result.CaptureTime = parsed
 		}
-		if strings.Contains(line, "Error") && exifErr == nil {
-			exifErr = fmt.Errorf("Exiftool error: %s", line)
+	}
+
+	return result, nil
+}
+
+func VerifyMetadata(filePath string, expected MetadataExpectation) error {
+	actual, err := ReadEmbeddedMetadata(filePath)
+	if err != nil {
+		return err
+	}
+
+	var problems []string
+	if expected.CaptureUTC != nil {
+		if actual.CaptureTime.IsZero() {
+			problems = append(problems, "capture time missing after write")
+		} else if math.Abs(actual.CaptureTime.UTC().Sub(expected.CaptureUTC.UTC()).Seconds()) > 2 {
+			problems = append(problems, fmt.Sprintf("capture time mismatch (got %s)", actual.CaptureTime.UTC().Format(time.RFC3339)))
 		}
 	}
 
-	if exifErr != nil {
-		return exifErr
+	if expected.GPS != nil {
+		if !hasGeo(actual.GPS) {
+			problems = append(problems, "GPS coordinates missing after write")
+		} else {
+			if math.Abs(actual.GPS.Latitude-expected.GPS.Latitude) > 0.0001 {
+				problems = append(problems, "latitude mismatch")
+			}
+			if math.Abs(actual.GPS.Longitude-expected.GPS.Longitude) > 0.0001 {
+				problems = append(problems, "longitude mismatch")
+			}
+		}
 	}
 
-	if err := exifToolScanner.Err(); err != nil {
-		return fmt.Errorf("Failed to read from exiftool: %v", err)
+	if expected.Title != "" && strings.TrimSpace(actual.Title) != expected.Title {
+		problems = append(problems, "title mismatch")
+	}
+	if expected.Description != "" && strings.TrimSpace(actual.Description) != expected.Description {
+		problems = append(problems, "description mismatch")
 	}
 
-	// Set the file system modification time to match
-	if err := os.Chtimes(filePath, utcTime, utcTime); err != nil {
-		return fmt.Errorf("failed to set file timestamps: %v", err)
+	if len(problems) > 0 {
+		return errors.New(strings.Join(problems, "; "))
 	}
-
 	return nil
 }
 
-// GetMajorBrand reads the MajorBrand tag from a file using the persistent exiftool instance
 func GetMajorBrand(filePath string) (string, error) {
-	exifToolMutex.Lock()
-	defer exifToolMutex.Unlock()
-
-	if exifToolCmd == nil {
-		return "", fmt.Errorf("exiftool not initialized")
-	}
-
-	if _, err := fmt.Fprintf(exifToolStdin, "-MajorBrand\n-s3\n-charset\nfilename=utf8\n%s\n-execute\n", filePath); err != nil {
+	output, err := runExifTool("-s3", "-MajorBrand", "-charset", "filename=utf8", filePath)
+	if err != nil {
 		return "", err
 	}
+	return strings.TrimSpace(string(output)), nil
+}
 
-	var majorBrand string
-	for exifToolScanner.Scan() {
-		if line := exifToolScanner.Text(); line == "{ready}" {
-			break
-		} else if majorBrand == "" && !strings.Contains(line, "Error") {
-			majorBrand = line
+func detectConflicts(meta imageMetadata, embedded embeddedMetadata) []MetadataFieldConflict {
+	conflicts := make([]MetadataFieldConflict, 0, 4)
+
+	if captureUTC, err := meta.BestTimestamp(); err == nil && !embedded.CaptureTime.IsZero() {
+		if math.Abs(embedded.CaptureTime.UTC().Sub(captureUTC.UTC()).Seconds()) > 2 {
+			conflicts = append(conflicts, MetadataFieldConflict{
+				Field:         "capture-time",
+				JSONValue:     captureUTC.Format(time.RFC3339),
+				EmbeddedValue: embedded.CaptureTime.UTC().Format(time.RFC3339),
+			})
 		}
 	}
 
-	return strings.TrimSpace(majorBrand), exifToolScanner.Err()
+	jsonGeo := meta.BestGeo()
+	if hasGeo(jsonGeo) && hasGeo(embedded.GPS) {
+		if math.Abs(jsonGeo.Latitude-embedded.GPS.Latitude) > 0.0001 ||
+			math.Abs(jsonGeo.Longitude-embedded.GPS.Longitude) > 0.0001 {
+			conflicts = append(conflicts, MetadataFieldConflict{
+				Field:         "gps",
+				JSONValue:     fmt.Sprintf("%.6f,%.6f", jsonGeo.Latitude, jsonGeo.Longitude),
+				EmbeddedValue: fmt.Sprintf("%.6f,%.6f", embedded.GPS.Latitude, embedded.GPS.Longitude),
+			})
+		}
+	}
+
+	if title := meta.BestTitle(); title != "" && strings.TrimSpace(embedded.Title) != "" && title != strings.TrimSpace(embedded.Title) {
+		conflicts = append(conflicts, MetadataFieldConflict{
+			Field:         "title",
+			JSONValue:     title,
+			EmbeddedValue: strings.TrimSpace(embedded.Title),
+		})
+	}
+
+	if description := meta.BestDescription(); description != "" && strings.TrimSpace(embedded.Description) != "" && description != strings.TrimSpace(embedded.Description) {
+		conflicts = append(conflicts, MetadataFieldConflict{
+			Field:         "description",
+			JSONValue:     description,
+			EmbeddedValue: strings.TrimSpace(embedded.Description),
+		})
+	}
+
+	return conflicts
 }
 
-// Determine the timezone at a photo's GPS location using the "latlog" library
-// If no GPS data is available, fall back to local time
-func getPhotoTimezone(lat, lon float64) *time.Location {
+func resolveCaptureLocation(geo takeoutGeoData, embedded embeddedMetadata) *time.Location {
+	if hasGeo(geo) {
+		return getPhotoTimezone(geo.Latitude, geo.Longitude)
+	}
+	if embedded.Offset != "" {
+		return fixedZoneFromOffset(embedded.Offset)
+	}
+	if !embedded.CaptureTime.IsZero() {
+		return embedded.CaptureTime.Location()
+	}
+	return time.UTC
+}
+
+func getPhotoTimezone(lat float64, lon float64) *time.Location {
 	if lat == 0 && lon == 0 {
-		return time.Local
+		return time.UTC
 	}
 
 	tzName := latlong.LookupZoneName(lat, lon)
 	if tzName == "" {
-		// Fallback in case latlog fails to find a timezone
 		Log(LoggerWarn, "Could not look up timezone for coordinates lat=%f, lon=%f", lat, lon)
 		offsetSec := int(math.Round(lon/15.0)) * 3600
 		return time.FixedZone("Photo", offsetSec)
@@ -277,7 +519,6 @@ func getPhotoTimezone(lat, lon float64) *time.Location {
 
 	loc, err := time.LoadLocation(tzName)
 	if err != nil {
-		// Fallback in case loading timezone fails
 		Log(LoggerWarn, "Could not load timezone '%s'", tzName)
 		offsetSec := int(math.Round(lon/15.0)) * 3600
 		return time.FixedZone("Photo", offsetSec)
@@ -285,8 +526,20 @@ func getPhotoTimezone(lat, lon float64) *time.Location {
 	return loc
 }
 
-// Format a timezone offset in seconds as "+hh:mm" / "-hh:mm" for EXIF
-// for example 3600 seconds becomes "+01:00"
+func fixedZoneFromOffset(offset string) *time.Location {
+	if len(offset) != 6 {
+		return time.UTC
+	}
+	sign := 1
+	if strings.HasPrefix(offset, "-") {
+		sign = -1
+	}
+	hours, _ := strconv.Atoi(offset[1:3])
+	minutes, _ := strconv.Atoi(offset[4:6])
+	totalSeconds := sign * ((hours * 3600) + (minutes * 60))
+	return time.FixedZone("Offset", totalSeconds)
+}
+
 func formatTimezoneOffset(offsetSec int) string {
 	sign := "+"
 	if offsetSec < 0 {
@@ -298,11 +551,66 @@ func formatTimezoneOffset(offsetSec int) string {
 	return fmt.Sprintf("%s%02d:%02d", sign, hours, minutes)
 }
 
-// Exiftool process variables
-var (
-	exifToolCmd     *exec.Cmd
-	exifToolStdin   io.WriteCloser
-	exifToolStdout  io.ReadCloser
-	exifToolScanner *bufio.Scanner
-	exifToolMutex   sync.Mutex
-)
+func parseFlexibleExifTime(raw string, fallbackOffset string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, fmt.Errorf("empty timestamp")
+	}
+
+	formats := []string{
+		"2006:01:02 15:04:05-07:00",
+		"2006:01:02 15:04:05Z07:00",
+		time.RFC3339,
+	}
+	for _, format := range formats {
+		if parsed, err := time.Parse(format, raw); err == nil {
+			return parsed, nil
+		}
+	}
+
+	if fallbackOffset != "" {
+		if parsed, err := time.Parse("2006:01:02 15:04:05-07:00", raw+fallbackOffset); err == nil {
+			return parsed, nil
+		}
+	}
+
+	return time.ParseInLocation("2006:01:02 15:04:05", raw, time.UTC)
+}
+
+func hasGeo(geo takeoutGeoData) bool {
+	return geo.Latitude != 0 || geo.Longitude != 0
+}
+
+func toString(value interface{}) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case nil:
+		return ""
+	default:
+		return fmt.Sprint(typed)
+	}
+}
+
+func toFloat(value interface{}) float64 {
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case string:
+		number, _ := strconv.ParseFloat(typed, 64)
+		return number
+	default:
+		return 0
+	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}

@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"image/color"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -52,30 +53,65 @@ func Main() {
 	var ignoreAlbums bool = false
 	var monthSubfolders bool = false
 	var restoreMOVExtension bool = false
+	var deduplicate bool = true
+	var dryRun bool = false
+	var verifyWrites bool = false
+	conflictPolicy := fixer.ConflictPreferJSON
 
 	progressLabel := widget.NewLabel("Ready to start")
 	progressLabel.Truncation = fyne.TextTruncateEllipsis
 	progressBar := widget.NewProgressBar()
+	selectionSummary := widget.NewLabel("Select your extracted Google Photos folder and an empty output folder.")
+	selectionSummary.Wrapping = fyne.TextWrapWord
+	hintLabel := widget.NewRichTextFromMarkdown("Recommended for a first run: keep `Write metadata`, `Deduplicate exact copies`, and `Verify metadata after write` enabled. Use `Dry run with audit report` first if you want a trust check before writing files.")
+	hintLabel.Wrapping = fyne.TextWrapWord
+	inputPathEntry := widget.NewEntry()
+	inputPathEntry.Disable()
+	outputPathEntry := widget.NewEntry()
+	outputPathEntry.Disable()
+	reportPath := ""
 	var cancelFn context.CancelFunc
 	var cancelButton *widget.Button
+	var openOutputButton *widget.Button
+	var openReportButton *widget.Button
+
+	updateSelectionSummary := func() {
+		inputText := "not selected"
+		if inputPath != "" {
+			inputText = inputPath
+		}
+		outputText := "not selected"
+		if outputPath != "" {
+			outputText = outputPath
+		}
+		selectionSummary.SetText(fmt.Sprintf("Input: %s\nOutput: %s", inputText, outputText))
+		inputPathEntry.SetText(inputText)
+		outputPathEntry.SetText(outputText)
+	}
 
 	// Button for opening file dialog for choosing google takeout path and output path
 	var inputButton *widget.Button
+	var outputButton *widget.Button
 	inputButton = widget.NewButtonWithIcon("Select Google Takeout Folder", theme.FolderOpenIcon(), func() {
 		dir, err := zenity.SelectFile(zenity.Title("Select Google Takeout Folder"), zenity.Directory())
 		if err == nil {
 			inputPath = dir
 			inputButton.SetText("Input: " + filepath.Base(inputPath))
+			if outputPath == "" {
+				outputPath = filepath.Join(filepath.Dir(inputPath), filepath.Base(inputPath)+" Fixed")
+				outputButton.SetText("Output: " + filepath.Base(outputPath))
+			}
+			updateSelectionSummary()
 			fmt.Println("Input folder:", inputPath)
 		}
 	})
 
-	var outputButton *widget.Button
 	outputButton = widget.NewButtonWithIcon("Select Output Folder", theme.FolderOpenIcon(), func() {
 		dir, err := zenity.SelectFile(zenity.Title("Select Output Folder"), zenity.Directory())
 		if err == nil {
 			outputPath = dir
 			outputButton.SetText("Output: " + filepath.Base(outputPath))
+			updateSelectionSummary()
 			fmt.Println("Output folder:", outputPath)
 		}
 	})
@@ -112,6 +148,48 @@ func Main() {
 		fmt.Println("restore MOV extension", restoreMOVExtension)
 	})
 
+	deduplicateCheckbox := widget.NewCheck("Deduplicate exact copies", func(value bool) {
+		deduplicate = value
+		fmt.Println("deduplicate exact copies", deduplicate)
+	})
+	deduplicateCheckbox.SetChecked(true)
+
+	dryRunCheckbox := widget.NewCheck("Dry run with audit report", func(value bool) {
+		dryRun = value
+		fmt.Println("dry run", dryRun)
+	})
+
+	verifyWritesCheckbox := widget.NewCheck("Verify metadata after write", func(value bool) {
+		verifyWrites = value
+		fmt.Println("verify metadata after write", verifyWrites)
+	})
+
+	conflictPolicySelect := widget.NewSelect(
+		[]string{
+			string(fixer.ConflictPreferJSON),
+			string(fixer.ConflictPreferEmbedded),
+			string(fixer.ConflictMerge),
+		},
+		func(value string) {
+			parsed, err := fixer.ParseConflictPolicy(value)
+			if err != nil {
+				return
+			}
+			conflictPolicy = parsed
+			fmt.Println("conflict policy", conflictPolicy)
+		},
+	)
+	conflictPolicySelect.SetSelected(string(fixer.ConflictPreferJSON))
+
+	applyRecommendedMode := func() {
+		writeMetadataCheckbox.SetChecked(true)
+		deduplicateCheckbox.SetChecked(true)
+		verifyWritesCheckbox.SetChecked(true)
+		dryRunCheckbox.SetChecked(false)
+		restoreMOVExtensionCheckbox.SetChecked(true)
+		conflictPolicySelect.SetSelected(string(fixer.ConflictMerge))
+	}
+
 	// Fix conflicting options
 	updateCheckboxStates := func() {
 		setEnabled := func(cb *widget.Check, enabled bool) {
@@ -136,6 +214,17 @@ func Main() {
 		}
 	}
 
+	recommendedButton := widget.NewButtonWithIcon("Recommended Safe Mode", theme.ConfirmIcon(), func() {
+		applyRecommendedMode()
+		fixer.Log(fixer.LoggerInfo, "Applied recommended settings")
+	})
+
+	dryRunPresetButton := widget.NewButtonWithIcon("Audit Only", theme.VisibilityIcon(), func() {
+		applyRecommendedMode()
+		dryRunCheckbox.SetChecked(true)
+		fixer.Log(fixer.LoggerInfo, "Configured for dry run audit")
+	})
+
 	// Button to start processing
 	var startButton *widget.Button
 	startButton = widget.NewButtonWithIcon("Start Processing", theme.MediaPlayIcon(), func() {
@@ -144,11 +233,19 @@ func Main() {
 			fixer.Log(fixer.LoggerInfo, "Select both input and output folders")
 			return
 		}
+		if filepath.Clean(inputPath) == filepath.Clean(outputPath) {
+			fixer.Log(fixer.LoggerError, "Input and output folders must be different")
+			return
+		}
 
 		// Disable buttons while processing
 		inputButton.Disable()
 		outputButton.Disable()
 		startButton.Disable()
+		recommendedButton.Disable()
+		dryRunPresetButton.Disable()
+		openOutputButton.Disable()
+		openReportButton.Disable()
 
 		useLinksCheckbox.Disable()
 		writeMetadataCheckbox.Disable()
@@ -156,9 +253,15 @@ func Main() {
 		monthSubfoldersCheckbox.Disable()
 		flattenCheckbox.Disable()
 		restoreMOVExtensionCheckbox.Disable()
+		deduplicateCheckbox.Disable()
+		dryRunCheckbox.Disable()
+		verifyWritesCheckbox.Disable()
+		conflictPolicySelect.Disable()
 
 		fixer.Log(fixer.LoggerInfo, "Processing...")
 		progressBar.SetValue(0)
+		progressLabel.SetText("Preparing media plan...")
+		reportPath = filepath.Join(outputPath, ".gtf", "reports", "latest.txt")
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancelFn = cancel
@@ -173,6 +276,10 @@ func Main() {
 			IgnoreAlbums:        ignoreAlbums,
 			MonthSubfolders:     monthSubfolders,
 			RestoreMOVExtension: restoreMOVExtension,
+			Deduplicate:         deduplicate,
+			DryRun:              dryRun,
+			VerifyWrites:        verifyWrites,
+			ConflictPolicy:      conflictPolicy,
 		}
 		go func() {
 			if err := fixer.Process(ctx, inputPath, outputPath, progressCh, opts); err != nil {
@@ -224,6 +331,7 @@ func Main() {
 				} else {
 					fixer.Log(fixer.LoggerInfo, "Detailed logs are saved in the ./logs folder")
 					fixer.Log(fixer.LoggerInfo, "Done")
+					fixer.Log(fixer.LoggerInfo, "Audit report: %s", reportPath)
 
 					progressLabel.SetText(fmt.Sprintf("Finished processing %d files", lastP.Processed))
 					fixer.Log(fixer.LoggerInfo, "%s", fmt.Sprintf("Finished processing %d files", lastP.Processed))
@@ -233,11 +341,23 @@ func Main() {
 				inputButton.Enable()
 				outputButton.Enable()
 				startButton.Enable()
+				recommendedButton.Enable()
+				dryRunPresetButton.Enable()
+				if outputPath != "" {
+					openOutputButton.Enable()
+				}
+				if reportPath != "" {
+					openReportButton.Enable()
+				}
 
 				// Manually re-enable restoreMOVExtensionCheckbox and writeMetadataCheckbox
 				// since they are not affected by other checboxes in updateCheckboxStates
 				restoreMOVExtensionCheckbox.Enable()
 				writeMetadataCheckbox.Enable()
+				deduplicateCheckbox.Enable()
+				dryRunCheckbox.Enable()
+				verifyWritesCheckbox.Enable()
+				conflictPolicySelect.Enable()
 				// Re-enable checboxes based on current states
 				updateCheckboxStates()
 			})
@@ -253,6 +373,25 @@ func Main() {
 		cancelFn()
 	})
 	cancelButton.Disable()
+
+	openFolder := func(path string) {
+		if path == "" {
+			return
+		}
+		if err := exec.Command("explorer.exe", path).Start(); err != nil {
+			fixer.Log(fixer.LoggerError, "Could not open %s: %v", path, err)
+		}
+	}
+
+	openOutputButton = widget.NewButtonWithIcon("Open Output Folder", theme.FolderOpenIcon(), func() {
+		openFolder(outputPath)
+	})
+	openOutputButton.Disable()
+
+	openReportButton = widget.NewButtonWithIcon("Open Latest Report", theme.DocumentIcon(), func() {
+		openFolder(reportPath)
+	})
+	openReportButton.Disable()
 
 	logEntry := widget.NewMultiLineEntry()
 	const maxVisibleLogLines = 200
@@ -306,11 +445,19 @@ func Main() {
 	}()
 
 	fixer.Log(fixer.LoggerInfo, "Logs will appear here...")
+	updateSelectionSummary()
 
 	folderButtons := container.NewGridWithColumns(
 		2,
 		inputButton,
 		outputButton,
+	)
+
+	pathPreview := container.NewVBox(
+		widget.NewLabel("Google Takeout folder"),
+		inputPathEntry,
+		widget.NewLabel("Fixed output folder"),
+		outputPathEntry,
 	)
 
 	CheckBoxRow := container.NewGridWithColumns(
@@ -321,9 +468,20 @@ func Main() {
 		monthSubfoldersCheckbox,
 		flattenCheckbox,
 		restoreMOVExtensionCheckbox,
+		deduplicateCheckbox,
+		dryRunCheckbox,
+		verifyWritesCheckbox,
 	)
 
+	conflictPolicyRow := container.NewGridWithColumns(
+		2,
+		widget.NewLabel("Conflict policy"),
+		conflictPolicySelect,
+	)
+
+	presetRow := container.NewGridWithColumns(2, recommendedButton, dryRunPresetButton)
 	StartCancelRow := container.NewGridWithColumns(2, startButton, cancelButton)
+	postRunRow := container.NewGridWithColumns(2, openOutputButton, openReportButton)
 
 	separator := canvas.NewRectangle(color.RGBA{R: 60, G: 60, B: 60, A: 100})
 	separator.SetMinSize(fyne.NewSize(1, 1))
@@ -331,18 +489,23 @@ func Main() {
 	FolderSeperator := container.NewPadded(separator)
 	OptionsSeparator := container.NewPadded(separator)
 
-
 	topContent := container.NewVBox(
+		hintLabel,
 		folderButtons,
+		selectionSummary,
+		pathPreview,
 		FolderSeperator,
+		presetRow,
 		CheckBoxRow,
+		conflictPolicyRow,
 		OptionsSeparator,
 		StartCancelRow,
+		postRunRow,
 		progressBar,
 		progressLabel,
 	)
 
-  mainContent := container.NewBorder(
+	mainContent := container.NewBorder(
 		topContent,
 		nil,
 		nil,
