@@ -121,7 +121,7 @@ func buildSidecarCandidate(path string) folderSidecarCandidate {
 		titleKeys: make(map[string]struct{}),
 	}
 
-	if meta, err := ReadJsonMetadata(path); err == nil {
+	if meta, err := ReadJSONMetadata(path); err == nil {
 		candidate.meta = &meta
 		candidate.title = strings.TrimSpace(meta.BestTitle())
 		candidate.titleKeys = keysToSet(buildNameKeys(candidate.title))
@@ -362,12 +362,12 @@ func appendUniqueKey(keys []string, key string) []string {
 }
 
 func commonPrefixLen(left string, right string) int {
-	max := len(left)
-	if len(right) < max {
-		max = len(right)
+	limit := len(left)
+	if len(right) < limit {
+		limit = len(right)
 	}
 	count := 0
-	for i := 0; i < max; i++ {
+	for i := 0; i < limit; i++ {
 		if left[i] != right[i] {
 			break
 		}

@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	_ "time/tzdata"
+	_ "time/tzdata" // Embed IANA timezone data for self-contained builds.
 
 	"github.com/bradfitz/latlong"
 )
@@ -106,14 +106,16 @@ func (m imageMetadata) BestTimestamp() (time.Time, error) {
 	return time.Time{}, fmt.Errorf("takeout JSON has no usable timestamp")
 }
 
-func ReadJsonMetadata(jsonPath string) (imageMetadata, error) {
+func ReadJSONMetadata(jsonPath string) (imageMetadata, error) {
 	var data imageMetadata
 
 	jsonFile, err := os.Open(jsonPath)
 	if err != nil {
 		return data, err
 	}
-	defer jsonFile.Close()
+	defer func() {
+		_ = jsonFile.Close()
+	}()
 
 	byteValue, err := io.ReadAll(jsonFile)
 	if err != nil {
@@ -124,6 +126,10 @@ func ReadJsonMetadata(jsonPath string) (imageMetadata, error) {
 }
 
 func getExifToolPath() string {
+	if strings.TrimSpace(exifToolPathOverride) != "" {
+		return exifToolPathOverride
+	}
+
 	exePath, err := os.Executable()
 	if err == nil {
 		dir := filepath.Dir(exePath)
@@ -140,7 +146,7 @@ func getExifToolPath() string {
 }
 
 func InitializeExifTool() error {
-	_, err := exec.LookPath(getExifToolPath())
+	_, err := DetectExifTool()
 	return err
 }
 
@@ -258,7 +264,9 @@ func ApplyMetadata(filePath string, meta imageMetadata, policy ConflictPolicy) (
 	}
 
 	if plan.WriteTimestamp {
-		_ = TouchWithCaptureTime(filePath, plan.CaptureUTC)
+		if err := TouchWithCaptureTime(filePath, plan.CaptureUTC); err != nil {
+			return result, err
+		}
 	}
 
 	result.MetadataWritten = true

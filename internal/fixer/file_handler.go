@@ -28,6 +28,8 @@ var videoExtensions = map[string]struct{}{
 	".mp4": {},
 }
 
+var yearPartRegexp = regexp.MustCompile(`^\d{4}$`)
+
 func ClearCache() {}
 
 func ClearCacheDir(_ string) {}
@@ -55,13 +57,17 @@ func DuplicateFile(inputPath string, outputPath string) error {
 	if err != nil {
 		return err
 	}
-	defer sourceFile.Close()
+	defer func() {
+		_ = sourceFile.Close()
+	}()
 
 	destFile, err := os.OpenFile(outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, sourceInfo.Mode())
 	if err != nil {
 		return err
 	}
-	defer destFile.Close()
+	defer func() {
+		_ = destFile.Close()
+	}()
 
 	if _, err := io.Copy(destFile, sourceFile); err != nil {
 		return err
@@ -75,7 +81,9 @@ func HashFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
@@ -150,7 +158,7 @@ func CountProcessableFiles(sourcePath string) (int, error) {
 
 func DetectFileMonth(sourcePath string, sidecarPath string) (int, error) {
 	if sidecarPath != "" {
-		metadata, err := ReadJsonMetadata(sidecarPath)
+		metadata, err := ReadJSONMetadata(sidecarPath)
 		if err == nil {
 			if timestamp, err := metadata.BestTimestamp(); err == nil {
 				return int(timestamp.UTC().Month()), nil
@@ -213,7 +221,7 @@ func IsYearFolder(dirName string) (bool, error) {
 	for _, prefix := range yearPrefixes {
 		if strings.HasPrefix(dirName, prefix) {
 			yearPart := strings.TrimPrefix(dirName, prefix)
-			if matched, _ := regexp.MatchString(`^\d{4}$`, yearPart); matched {
+			if yearPartRegexp.MatchString(yearPart) {
 				return true, nil
 			}
 		}

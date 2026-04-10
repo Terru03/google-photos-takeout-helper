@@ -34,37 +34,59 @@ const (
 	LoggerError LogLevel = "ERROR"
 )
 
-// LogHandler allows the GUI or CLI to intercept logs
-var LogHandler func(level LogLevel, message string)
-
 var (
 	logFileMu sync.Mutex
 	logFile   *os.File
+
+	logHandlerMu sync.RWMutex
+	logHandler   func(level LogLevel, message string)
 )
 
-func InitializeFileLogger() error {
+func SetLogHandler(handler func(level LogLevel, message string)) {
+	logHandlerMu.Lock()
+	defer logHandlerMu.Unlock()
+	logHandler = handler
+}
+
+func getLogHandler() func(level LogLevel, message string) {
+	logHandlerMu.RLock()
+	defer logHandlerMu.RUnlock()
+	return logHandler
+}
+
+func InitializeFileLogger(logDir string) (string, error) {
 	logFileMu.Lock()
 	defer logFileMu.Unlock()
 
 	if logFile != nil {
-		_ = logFile.Close()
+		if err := logFile.Close(); err != nil {
+			return "", err
+		}
 		logFile = nil
 	}
 
-	if err := os.MkdirAll("logs", 0o755); err != nil {
-		return err
+	if logDir == "" {
+		paths, err := ResolveRuntimePaths("")
+		if err != nil {
+			return "", err
+		}
+		logDir = paths.LogDir
+	}
+
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return "", err
 	}
 
 	fileName := fmt.Sprintf("%s.txt", time.Now().Format("2006-01-02_15-04-05"))
-	filePath := filepath.Join("logs", fileName)
+	filePath := filepath.Join(logDir, fileName)
 
 	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	logFile = file
-	return nil
+	return filePath, nil
 }
 
 func CloseFileLogger() error {
@@ -88,11 +110,13 @@ func Log(level LogLevel, format string, args ...interface{}) {
 
 	logFileMu.Lock()
 	if logFile != nil {
-		_, _ = logFile.WriteString(logLine)
+		if _, err := logFile.WriteString(logLine); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to write log file: %v\n", err)
+		}
 	}
 	logFileMu.Unlock()
 
-	if LogHandler != nil {
-		LogHandler(level, msg)
+	if handler := getLogHandler(); handler != nil {
+		handler(level, msg)
 	}
 }

@@ -40,7 +40,11 @@ func TestStateStoreKeepsLatestRecordAndHashIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenStateStore(reopen) returned error: %v", err)
 	}
-	defer reopened.Close()
+	t.Cleanup(func() {
+		if closeErr := reopened.Close(); closeErr != nil {
+			t.Fatalf("Close returned error: %v", closeErr)
+		}
+	})
 
 	record, ok := reopened.Get(first.SourceRelPath)
 	if !ok {

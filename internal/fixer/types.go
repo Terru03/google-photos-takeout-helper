@@ -45,6 +45,16 @@ type ProcessOptions struct {
 	ConflictPolicy      ConflictPolicy
 }
 
+func DefaultProcessOptions() ProcessOptions {
+	return ProcessOptions{
+		WriteMetadata:       true,
+		RestoreMOVExtension: true,
+		Deduplicate:         true,
+		VerifyWrites:        true,
+		ConflictPolicy:      ConflictMerge,
+	}
+}
+
 func (o ProcessOptions) Normalized() ProcessOptions {
 	if o.ConflictPolicy == "" {
 		o.ConflictPolicy = ConflictPreferJSON
@@ -79,7 +89,7 @@ const (
 	OperationCopied             OperationStatus = "copied"
 	OperationCopiedWithMetadata OperationStatus = "copied-with-metadata"
 	OperationCopiedWithoutMeta  OperationStatus = "copied-without-metadata"
-	OperationHardlinked         OperationStatus = "hardlinked"
+	OperationHardlinked         OperationStatus = "hard-linked"
 	OperationSymlinked          OperationStatus = "symlinked"
 	OperationDuplicateCopied    OperationStatus = "duplicate-copied"
 	OperationError              OperationStatus = "error"

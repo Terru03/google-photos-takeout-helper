@@ -3,14 +3,14 @@
 First off, thank you for considering contributing to this project! I really appreciate any help!
 
 ## Ways to contribute
-- **Report bugs**: Please report bugs in the [issue tracker](https://github.com/feloex/GoogleTakeoutFixer/issues).
-- **Suggest features**: If you have any ideas for new features or improvements, please share them in the [issue tracker](https://github.com/feloex/GoogleTakeoutFixer/issues).
+- **Report bugs**: Please report bugs in the project issue tracker.
+- **Suggest features**: If you have any ideas for new features or improvements, please share them in the project issue tracker.
 - **Share the project** with people who might find it useful
 - Star the GitHub repository
 
 ## Reporting bugs
 Before reporting a bug, please make sure to do the following:
-1. Check the [issue tracker](https://github.com/feloex/GoogleTakeoutFixer/issues) to see if the bug has already been reported.
+1. Check the project issue tracker to see if the bug has already been reported.
 2. Make sure you are using the latest version of GoogleTakeoutFixer
 3. Make sure you followed the instructions in the README correctly.
 
@@ -24,15 +24,20 @@ A good bug report includes the following information:
 
 ## Pull requests
 ### Before submitting a pull request
-Before submitting a pull request, please check the [issue tracker](https://github.com/feloex/GoogleTakeoutFixer/issues) to see if there are any existing issues that your pull request addresses. If not, you can create a new issue to discuss your proposed changes before submitting a pull request. This can help ensure that your changes are wanted and that they align with the project's goals. You don't have to create an issue for small changes (e.g. fixing typos) but for larger changes (e.g. adding a new feature), please create an issue first. Not creating an issue for larger changes can lead to your pull request being closed without merging.
+Before submitting a pull request, please check the project issue tracker to see if there are any existing issues that your pull request addresses. If not, you can create a new issue to discuss your proposed changes before submitting a pull request. This can help ensure that your changes are wanted and that they align with the project's goals. You don't have to create an issue for small changes (e.g. fixing typos) but for larger changes (e.g. adding a new feature), please create an issue first. Not creating an issue for larger changes can lead to your pull request being closed without merging.
 
 ### Process
 1. Fork the repository
 2. Create a new branch for your changes
 3. Make your changes following the existing code style and conventions
-4. Test your changes
-5. Commit your changes with a clear commit message following the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) format
-6. Create a pull request with a clear description of what you have done and why
+4. Run the standard checks:
+   - `go test ./internal/fixer ./internal/cli`
+   - `golangci-lint run ./internal/fixer/... ./internal/cli/...`
+   - `go build ./cmd/gtf-cli`
+5. Use `pre-commit install` if you want the repository hooks locally
+6. Keep comments short and focused on non-obvious behavior
+7. Commit your changes with a clear commit message following the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) format
+8. Create a pull request with a clear description of what you have done and why
 
 Also please link relevant issues in your pull request description (e.g. "Closes #123").
 

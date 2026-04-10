@@ -1,9 +1,4 @@
-# GoogleTakeoutFixer 
-
-[![GitHub Repo stars](https://img.shields.io/github/stars/feloex/GoogleTakeoutFixer?style=flat&color=yellow&link=https%3A%2F%2Fgithub.com%2Ffeloex%2FGoogleTakeoutFixer)](https://github.com/feloex/GoogleTakeoutFixer)
-[![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/feloex/GoogleTakeoutFixer/total?style=flat&color=dark-green)](https://github.com/feloex/GoogleTakeoutFixer/releases)
-[![GitHub Downloads (all assets, latest release)](https://img.shields.io/github/downloads/feloex/GoogleTakeoutFixer/latest/total?style=flat&color=dark-green)](https://github.com/feloex/GoogleTakeoutFixer/releases/latest)
-[![Go Report Card](https://goreportcard.com/badge/github.com/feloex/GoogleTakeoutFixer)](https://goreportcard.com/report/github.com/feloex/GoogleTakeoutFixer)
+# GoogleTakeoutFixer
 
 <p align="center">
     <img src="images/GoogleTakeoutFixer.png" alt="drawing" width="200"/>
@@ -54,7 +49,7 @@ To use GoogleTakeoutFixer, you must have downloaded your photos from Google Take
 > - Select the folder named "Google Photos" as your input folder. This folder should contain subfolders like "Photos from (year)" and folders with the names of your albums. Do not select a parent folder of "Google Photos".
 
 ### 2. Installation
-1. Download the latest release of GoogleTakeoutFixer from the [release page](https://github.com/feloex/GoogleTakeoutFixer/releases). Choose the version that matches your operating system.
+1. Download a bundled release of GoogleTakeoutFixer from this repository's releases. Choose the version that matches your operating system.
 2. Extract the downloaded archive.
 3. Run the executable file.
 
@@ -63,7 +58,7 @@ To use GoogleTakeoutFixer, you must have downloaded your photos from Google Take
 
 ### 3. Using GoogleTakeoutFixer
 1. Click **"Select Google Takeout folder"** and choose the folder where you extracted your Google Takeout photos. This folder is named something like "Google Photos".
-2. Click **"Select output folder"** and choose the folder where you want the fixed photos to be saved.
+2. Let the app suggest a sibling output folder automatically, or click **"Select output folder"** and choose your own.
 3. Choose the options that you want to apply:
     - **"Write metadata"**: Writes metadata from JSON files into the media files. May not be necessary.
     - **"Use symlinks for albums"**: Creates file links instead of duplicating files for albums.
@@ -71,11 +66,12 @@ To use GoogleTakeoutFixer, you must have downloaded your photos from Google Take
     - **"Create month subfolders"**: Creates month subfolders (labeled 1-12) inside of the output folders.
     - **"Flatten output structure"**: Puts all files directly in the output folder.
     - **"Restore .MOV file extension"**: Restores .MOV file extension in case the Major Brand EXIF field says "Apple QuickTime (.MOV/QT)" (See #2).
+4. For a safe default, click **"Recommended Safe Mode"**. For a no-write trust check, click **"Audit Only"**.
 5. Click **"Start processing"** and wait for the process to finish. The time it takes depends on the number of photos and videos you have.
 
 Once the process is complete, you can find your fixed files in the output folder you selected.
 
-You will be able to find a full log file inside of the GoogleTakeoutFixer folder inside of the `logs` folder.
+You can open the output folder and the latest audit report directly from the GUI after the run finishes.
 
 ---
 
@@ -105,6 +101,9 @@ During each run, the tool writes resumable state and audit artifacts under `OUTP
 - `state.jsonl`: append-only processing state used for resumable/idempotent runs
 - `reports/latest.txt`: human-readable audit summary
 - `reports/latest.json`: detailed machine-readable report
+- `logs/*.txt`: per-run logs written beside the repaired library instead of the current working directory
+
+GUI preferences are saved in your user config directory as `GoogleTakeoutFixer/config.json`.
 
 You might have to give the executable permissions to run on Linux and macOS using `chmod +x GoogleTakeoutFixer` before you can run it through the terminal.
 
@@ -115,8 +114,8 @@ To run the GUI, make sure you have the necessary dependencies for Fyne installed
 
 ```
 # Clone this repo
-git clone https://github.com/feloex/GoogleTakeoutFixer.git
-cd GoogleTakeoutFixer
+git clone https://github.com/Terru03/google-photos-takeout-helper.git
+cd google-photos-takeout-helper
 
 # run the hybrid desktop app / CLI entrypoint
 go run ./cmd
@@ -124,9 +123,20 @@ go run ./cmd
 # build a standalone CLI binary
 go build ./cmd/gtf-cli
 
+# run tests
+go test ./internal/fixer ./internal/cli
+
+# run lint on the core packages
+golangci-lint run ./internal/fixer/... ./internal/cli/...
+
 # build Windows binaries into ./dist
 powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 ```
+
+### Docs
+- [Architecture](./docs/architecture.md)
+- [Troubleshooting](./docs/troubleshooting.md)
+- [Versioning](./docs/versioning.md)
 
 ## Credits
 This project modifies metadata using the [ExifTool](https://exiftool.org/) library by **Phil Harvey**. ExifTool is licensed under the Perl Artistic license, or the GNU General Public License (see [here](https://exiftool.org/#license) for more details).

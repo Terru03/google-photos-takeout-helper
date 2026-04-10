@@ -3,6 +3,7 @@ package fixer
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -11,9 +12,10 @@ import (
 type StateStore struct {
 	path      string
 	file      *os.File
-	mu        sync.Mutex
+	mu        sync.RWMutex
 	records   map[string]ProcessRecord
 	hashIndex map[string]ProcessRecord
+	Warnings  []string
 }
 
 func OpenStateStore(path string) (*StateStore, error) {
@@ -28,10 +30,24 @@ func OpenStateStore(path string) (*StateStore, error) {
 	}
 
 	if existing, err := os.Open(path); err == nil {
+		defer func() {
+			if closeErr := existing.Close(); closeErr != nil {
+				store.Warnings = append(store.Warnings, fmt.Sprintf("close state reader: %v", closeErr))
+			}
+		}()
+
 		scanner := bufio.NewScanner(existing)
+		scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+		lineNumber := 0
 		for scanner.Scan() {
+			lineNumber++
 			var record ProcessRecord
 			if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+				store.Warnings = append(store.Warnings, fmt.Sprintf("ignored corrupt state line %d: %v", lineNumber, err))
+				continue
+			}
+			if record.SourceRelPath == "" {
+				store.Warnings = append(store.Warnings, fmt.Sprintf("ignored state line %d with empty sourceRelPath", lineNumber))
 				continue
 			}
 			store.records[record.SourceRelPath] = record
@@ -41,7 +57,9 @@ func OpenStateStore(path string) (*StateStore, error) {
 				}
 			}
 		}
-		_ = existing.Close()
+		if err := scanner.Err(); err != nil {
+			store.Warnings = append(store.Warnings, fmt.Sprintf("state scan error: %v", err))
+		}
 	}
 
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -65,8 +83,8 @@ func (s *StateStore) Close() error {
 }
 
 func (s *StateStore) Get(sourceRelPath string) (ProcessRecord, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	record, ok := s.records[sourceRelPath]
 	return record, ok
 }
@@ -97,8 +115,8 @@ func (s *StateStore) Put(record ProcessRecord) error {
 }
 
 func (s *StateStore) CanonicalByHash(hash string) (ProcessRecord, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	record, ok := s.hashIndex[hash]
 	return record, ok
 }

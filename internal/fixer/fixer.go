@@ -18,14 +18,24 @@ func Process(
 ) error {
 	options = options.Normalized()
 
-	if err := InitializeFileLogger(); err != nil {
-		if LogHandler != nil {
-			LogHandler(LoggerWarn, fmt.Sprintf("Failed to initialize file logger: %v", err))
+	if err := ValidateProcessPaths(sourcePath, outputPath); err != nil {
+		return err
+	}
+
+	runtimePaths, err := ResolveRuntimePaths(outputPath)
+	if err != nil {
+		return err
+	}
+
+	if logFilePath, err := InitializeFileLogger(runtimePaths.LogDir); err != nil {
+		if handler := getLogHandler(); handler != nil {
+			handler(LoggerWarn, fmt.Sprintf("Failed to initialize file logger: %v", err))
 		}
 	} else {
+		Log(LoggerInfo, "File log: %s", logFilePath)
 		defer func() {
-			if err := CloseFileLogger(); err != nil && LogHandler != nil {
-				LogHandler(LoggerWarn, fmt.Sprintf("Failed to close file logger: %v", err))
+			if err := CloseFileLogger(); err != nil && getLogHandler() != nil {
+				getLogHandler()(LoggerWarn, fmt.Sprintf("Failed to close file logger: %v", err))
 			}
 		}()
 	}
@@ -46,6 +56,12 @@ func Process(
 		return err
 	}
 
+	if exifInfo, err := ValidateProcessingDependencies(options); err != nil {
+		return err
+	} else if exifInfo != nil {
+		Log(LoggerInfo, "Using ExifTool %s from %s", exifInfo.Version, exifInfo.Path)
+	}
+
 	if options.WriteMetadata || options.VerifyWrites || options.RestoreMOVExtension {
 		if err := InitializeExifTool(); err != nil {
 			return err
@@ -61,23 +77,29 @@ func Process(
 		return fmt.Errorf("no media files found in %s", sourcePath)
 	}
 
-	stateDir := filepath.Join(outputPath, ".gtf")
-	if err := EnsureDir(stateDir); err != nil {
+	if err := EnsureDir(runtimePaths.StateDir); err != nil {
 		return err
 	}
 
-	stateStore, err := OpenStateStore(filepath.Join(stateDir, "state.jsonl"))
+	stateStore, err := OpenStateStore(filepath.Join(runtimePaths.StateDir, "state.jsonl"))
 	if err != nil {
 		return err
 	}
-	defer stateStore.Close()
+	defer func() {
+		if closeErr := stateStore.Close(); closeErr != nil {
+			Log(LoggerWarn, "Failed to close state store: %v", closeErr)
+		}
+	}()
+	for _, warning := range stateStore.Warnings {
+		Log(LoggerWarn, "%s", warning)
+	}
 
 	report := NewRunReport(sourcePath, outputPath, options)
 	defer func() {
-		if err := report.Write(stateDir); err != nil {
+		if err := report.Write(runtimePaths.StateDir); err != nil {
 			Log(LoggerError, "Failed to write audit report: %v", err)
 		} else {
-			Log(LoggerInfo, "Audit report written to %s", filepath.Join(stateDir, "reports", "latest.txt"))
+			Log(LoggerInfo, "Audit report written to %s", filepath.Join(runtimePaths.StateDir, "reports", "latest.txt"))
 		}
 	}()
 
