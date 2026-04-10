@@ -133,11 +133,5 @@ This project modifies metadata using the [ExifTool](https://exiftool.org/) libra
 
 Matching behavior and product direction were also informed by other Google Takeout repair tools, especially `gophix`, but this codebase maintains its own implementation and state/reporting model.
 
-## Donate
-This software is completely free. You are free to use, modify, and distribute it. If you'd like to support my work, you can donate via my monero adress. Remember that donating is completely optional.
-Please consider supporting other open-source projects.
-
-XMR: ``86ApiK5RFKeVsaEDreQvvkE5Mdo6p3xwtGAZTcbf7JKFDnJ4bG52zqsZjAzgFW6prWhfarinBLrCpW8faxKotG26RcRD4fQ``
-
 ## Disclaimer
 Not affiliated with Google LLC.

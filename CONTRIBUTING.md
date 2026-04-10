@@ -7,7 +7,6 @@ First off, thank you for considering contributing to this project! I really appr
 - **Suggest features**: If you have any ideas for new features or improvements, please share them in the [issue tracker](https://github.com/feloex/GoogleTakeoutFixer/issues).
 - **Share the project** with people who might find it useful
 - Star the GitHub repository
-- Donate to the project (see [Donate](#donate) section below)
 
 ## Reporting bugs
 Before reporting a bug, please make sure to do the following:
@@ -49,9 +48,3 @@ If you want to contribute your ideas but don't have the time/skills to do so, pl
 ## License
 By contributing to this project, you agree that your contributions will be licensed under the [GNU General Public License v3.0](./LICENSE).
 
-## Donate
-Donating is not mandatory but greatly appreciated 🙏! You can support me via my monero (cryptocurrency) address: 
-
-XMR: `86ApiK5RFKeVsaEDreQvvkE5Mdo6p3xwtGAZTcbf7JKFDnJ4bG52zqsZjAzgFW6prWhfarinBLrCpW8faxKotG26RcRD4fQ`
-
-If you don't want to donate to this project or don't have anything to do with monero/cryptocurrencies, **please consider donating to/supporting other open source projects** that you use and love!
