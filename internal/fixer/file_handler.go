@@ -3,6 +3,7 @@ package fixer
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -173,6 +174,14 @@ func DetectFileMonth(sourcePath string, sidecarPath string) (int, error) {
 	return int(info.ModTime().Month()), nil
 }
 
+func FormatMonthFolderName(month int) string {
+	if month < int(time.January) || month > int(time.December) {
+		return strconv.Itoa(month)
+	}
+
+	return fmt.Sprintf("%d - %s", month, time.Month(month).String())
+}
+
 func ResolveOutputDir(outputRoot string, plan MediaPlan, options ProcessOptions) (string, error) {
 	if options.Flatten {
 		return outputRoot, nil
@@ -191,7 +200,7 @@ func ResolveOutputDir(outputRoot string, plan MediaPlan, options ProcessOptions)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(targetDir, strconv.Itoa(month)), nil
+	return filepath.Join(targetDir, FormatMonthFolderName(month)), nil
 }
 
 func IsYearFolder(dirName string) (bool, error) {

@@ -26,15 +26,36 @@ type RunReportSummary struct {
 	Errors             int `json:"errors"`
 }
 
+type SourceCleanupStatus string
+
+const (
+	SourceCleanupStatusSkippedDisabled  SourceCleanupStatus = "skipped-disabled"
+	SourceCleanupStatusSkippedDryRun    SourceCleanupStatus = "skipped-dry-run"
+	SourceCleanupStatusSkippedCancelled SourceCleanupStatus = "skipped-cancelled"
+	SourceCleanupStatusSkippedProblems  SourceCleanupStatus = "skipped-problems"
+	SourceCleanupStatusDeleted          SourceCleanupStatus = "deleted"
+	SourceCleanupStatusFailed           SourceCleanupStatus = "failed"
+)
+
+type SourceCleanupResult struct {
+	Enabled bool                `json:"enabled"`
+	Status  SourceCleanupStatus `json:"status,omitempty"`
+	Path    string              `json:"path,omitempty"`
+	Reason  string              `json:"reason,omitempty"`
+	Error   string              `json:"error,omitempty"`
+}
+
 type RunReport struct {
-	mu         sync.Mutex
-	StartedAt  time.Time        `json:"startedAt"`
-	FinishedAt time.Time        `json:"finishedAt"`
-	SourceRoot string           `json:"sourceRoot"`
-	OutputRoot string           `json:"outputRoot"`
-	Options    ProcessOptions   `json:"options"`
-	Summary    RunReportSummary `json:"summary"`
-	Records    []ProcessRecord  `json:"records"`
+	mu              sync.Mutex             `json:"-"`
+	StartedAt       time.Time              `json:"startedAt"`
+	FinishedAt      time.Time              `json:"finishedAt"`
+	SourceRoot      string                 `json:"sourceRoot"`
+	OutputRoot      string                 `json:"outputRoot"`
+	Options         ProcessOptions         `json:"options"`
+	Summary         RunReportSummary       `json:"summary"`
+	MotionPhotoPass *MotionPhotoPassResult `json:"motionPhotoPass,omitempty"`
+	SourceCleanup   *SourceCleanupResult   `json:"sourceCleanup,omitempty"`
+	Records         []ProcessRecord        `json:"records"`
 }
 
 func NewRunReport(sourceRoot string, outputRoot string, options ProcessOptions) *RunReport {
@@ -92,6 +113,42 @@ func (r *RunReport) Add(record ProcessRecord) {
 	}
 }
 
+func (r *RunReport) SetMotionPhotoPass(result MotionPhotoPassResult) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.MotionPhotoPass = &result
+	if result.Error != "" {
+		r.Summary.Errors++
+	}
+	r.Summary.Errors += result.CleanupErrors
+}
+
+func (r *RunReport) SetSourceCleanup(result SourceCleanupResult) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.SourceCleanup = &result
+	if result.Error != "" {
+		r.Summary.Errors++
+	}
+}
+
+func (r *RunReport) CanDeleteSourceRoot() (bool, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.Summary.Unmatched > 0 || r.Summary.Ambiguous > 0 || r.Summary.Errors > 0 {
+		return false, fmt.Sprintf(
+			"kept input because summary has unmatched=%d ambiguous=%d errors=%d",
+			r.Summary.Unmatched,
+			r.Summary.Ambiguous,
+			r.Summary.Errors,
+		)
+	}
+	return true, ""
+}
+
 func (r *RunReport) Write(baseDir string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -138,6 +195,39 @@ func (r *RunReport) toText() string {
 	fmt.Fprintf(&b, "Finished: %s\n", r.FinishedAt.Format(time.RFC3339))
 	fmt.Fprintf(&b, "Source: %s\n", r.SourceRoot)
 	fmt.Fprintf(&b, "Output: %s\n", r.OutputRoot)
+	if r.MotionPhotoPass != nil && r.MotionPhotoPass.Enabled {
+		fmt.Fprintf(&b, "Motion photo pass: %s", r.MotionPhotoPass.Status)
+		if r.MotionPhotoPass.ToolPath != "" {
+			fmt.Fprintf(&b, " (%s)", r.MotionPhotoPass.ToolPath)
+		}
+		if r.MotionPhotoPass.Error != "" {
+			fmt.Fprintf(&b, " error=%s", r.MotionPhotoPass.Error)
+		}
+		fmt.Fprintln(&b)
+		if r.MotionPhotoPass.StandaloneVideoCandidates > 0 {
+			fmt.Fprintf(
+				&b,
+				"Motion photo cleanup: deleted=%d skipped=%d errors=%d candidates=%d\n",
+				r.MotionPhotoPass.StandaloneVideosDeleted,
+				r.MotionPhotoPass.StandaloneVideosSkipped,
+				r.MotionPhotoPass.CleanupErrors,
+				r.MotionPhotoPass.StandaloneVideoCandidates,
+			)
+		}
+	}
+	if r.SourceCleanup != nil && r.SourceCleanup.Enabled {
+		fmt.Fprintf(&b, "Source cleanup: %s", r.SourceCleanup.Status)
+		if r.SourceCleanup.Path != "" {
+			fmt.Fprintf(&b, " (%s)", r.SourceCleanup.Path)
+		}
+		if r.SourceCleanup.Reason != "" {
+			fmt.Fprintf(&b, " reason=%s", r.SourceCleanup.Reason)
+		}
+		if r.SourceCleanup.Error != "" {
+			fmt.Fprintf(&b, " error=%s", r.SourceCleanup.Error)
+		}
+		fmt.Fprintln(&b)
+	}
 	fmt.Fprintf(&b, "\nSummary\n")
 	fmt.Fprintf(&b, "  Total media: %d\n", r.Summary.TotalMedia)
 	fmt.Fprintf(&b, "  Matched: %d\n", r.Summary.Matched)
@@ -161,6 +251,9 @@ func (r *RunReport) toText() string {
 		}
 		problems++
 		fmt.Fprintf(&b, "  - %s [%s]", record.SourceRelPath, record.MatchStatus)
+		if record.PartnerRelPath != "" {
+			fmt.Fprintf(&b, " partner=%s", record.PartnerRelPath)
+		}
 		if record.Error != "" {
 			fmt.Fprintf(&b, " error=%s", record.Error)
 		}

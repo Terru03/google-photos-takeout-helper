@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -153,12 +154,45 @@ func InitializeExifTool() error {
 func CloseExifTool() {}
 
 func runExifTool(args ...string) ([]byte, error) {
-	cmd := exec.Command(getExifToolPath(), args...)
+	cmd, cleanup, err := newExifToolCommand(args...)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return output, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return output, nil
+}
+
+func newExifToolCommand(args ...string) (*exec.Cmd, func(), error) {
+	if runtime.GOOS != "windows" {
+		return newHiddenCommand(getExifToolPath(), args...), func() {}, nil
+	}
+
+	argFile, err := os.CreateTemp("", "gtf-exiftool-*.args")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	body := strings.Join(args, "\n") + "\n"
+	if _, err := argFile.WriteString(body); err != nil {
+		_ = argFile.Close()
+		_ = os.Remove(argFile.Name())
+		return nil, nil, err
+	}
+	if err := argFile.Close(); err != nil {
+		_ = os.Remove(argFile.Name())
+		return nil, nil, err
+	}
+
+	cleanup := func() {
+		_ = os.Remove(argFile.Name())
+	}
+
+	return newHiddenCommand(getExifToolPath(), "-@", argFile.Name()), cleanup, nil
 }
 
 func ApplyMetadata(filePath string, meta imageMetadata, policy ConflictPolicy) (MetadataApplyResult, error) {
@@ -206,10 +240,8 @@ func ApplyMetadata(filePath string, meta imageMetadata, policy ConflictPolicy) (
 	}
 
 	if plan.WriteGPS {
-		coordinates := fmt.Sprintf("%.7f %.7f %.2f", plan.GPS.Latitude, plan.GPS.Longitude, plan.GPS.Altitude)
 		if IsVideoFile(filePath) {
 			args = append(args,
-				"-Keys:GPSCoordinates="+coordinates,
 				"-XMP-exif:GPSLatitude="+fmt.Sprintf("%.7f", plan.GPS.Latitude),
 				"-XMP-exif:GPSLongitude="+fmt.Sprintf("%.7f", plan.GPS.Longitude),
 				"-XMP-exif:GPSAltitude="+fmt.Sprintf("%.2f", plan.GPS.Altitude),
@@ -392,6 +424,7 @@ func ReadEmbeddedMetadata(filePath string) (embeddedMetadata, error) {
 
 	rawTime := firstNonEmptyString(
 		toString(row["DateTimeOriginal"]),
+		toString(row["CreationDate"]),
 		toString(row["Keys:CreationDate"]),
 		toString(row["CreateDate"]),
 		toString(row["QuickTime:CreateDate"]),

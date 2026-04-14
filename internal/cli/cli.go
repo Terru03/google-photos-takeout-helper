@@ -47,8 +47,10 @@ func Main() {
 	useSymlinks := flag.Bool("symlink", false, "Use symlinks inside of albums instead of duplicating images")
 	skipMetadata := flag.Bool("skip-metadata", !defaults.WriteMetadata, "Skip writing metadata to files")
 	ignoreAlbums := flag.Bool("ignore-albums", false, "Ignore all album folders")
-	monthSubfolders := flag.Bool("month-subfolders", false, "Create month subfolders (1-12) inside year folders")
+	monthSubfolders := flag.Bool("month-subfolders", false, "Create month subfolders like \"1 - January\" inside year folders")
 	flatten := flag.Bool("flatten", false, "Put all media files directly in the output folder without year/album subfolders")
+	createMotionPhotos := flag.Bool("motion-photos", false, "Create Windows-viewable Samsung/Google Motion Photos with MotionPhoto2 after processing")
+	deleteSource := flag.Bool("delete-source", false, "Delete the original input folder after a fully clean run with zero unmatched, ambiguous, or error records")
 	restoreMOV := flag.Bool("restore-mov", defaults.RestoreMOVExtension, "Restore .MOV file extension in case the Major Brand EXIF field says \"Apple QuickTime (.MOV/QT)\"")
 	dryRun := flag.Bool("dry-run", false, "Plan the run and generate an audit report without writing files")
 	verifyWrites := flag.Bool("verify", defaults.VerifyWrites, "Verify written metadata by reading it back with ExifTool")
@@ -94,16 +96,18 @@ func Main() {
 	progressCh := make(chan fixer.Progress)
 
 	options := fixer.ProcessOptions{
-		UseSymlinks:         *useSymlinks,
-		WriteMetadata:       !*skipMetadata,
-		Flatten:             *flatten,
-		IgnoreAlbums:        *ignoreAlbums,
-		MonthSubfolders:     *monthSubfolders,
-		RestoreMOVExtension: *restoreMOV,
-		Deduplicate:         !*noDeduplicate,
-		DryRun:              *dryRun,
-		VerifyWrites:        *verifyWrites,
-		ConflictPolicy:      conflictPolicy,
+		UseSymlinks:              *useSymlinks,
+		WriteMetadata:            !*skipMetadata,
+		Flatten:                  *flatten,
+		IgnoreAlbums:             *ignoreAlbums,
+		MonthSubfolders:          *monthSubfolders,
+		CreateMotionPhotos:       *createMotionPhotos,
+		DeleteSourceAfterSuccess: *deleteSource,
+		RestoreMOVExtension:      *restoreMOV,
+		Deduplicate:              !*noDeduplicate,
+		DryRun:                   *dryRun,
+		VerifyWrites:             *verifyWrites,
+		ConflictPolicy:           conflictPolicy,
 	}
 
 	if err := fixer.ValidateProcessPaths(*inputPath, *outputPath); err != nil {
@@ -115,6 +119,12 @@ func Main() {
 		os.Exit(1)
 	} else if exifInfo != nil {
 		fmt.Printf("Using ExifTool %s from %s\n", exifInfo.Version, exifInfo.Path)
+	}
+	if motionInfo, err := fixer.ValidateMotionPhotoDependencies(options); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	} else if motionInfo != nil {
+		fmt.Printf("Using MotionPhoto2 from %s\n", motionInfo.Path)
 	}
 
 	fixer.SafeGo("cli-process", func() {

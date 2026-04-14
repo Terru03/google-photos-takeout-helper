@@ -72,6 +72,74 @@ func TestDiscoverMediaPlanUsesPartnerSidecarForVideo(t *testing.T) {
 	}
 }
 
+func TestDiscoverMediaPlanUsesPartnerSidecarForImage(t *testing.T) {
+	root := t.TempDir()
+	albumDir := filepath.Join(root, "Photos from 2021")
+	if err := os.MkdirAll(albumDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeTestFile(t, filepath.Join(albumDir, "PXL_5678.jpg"), "image")
+	writeTestFile(t, filepath.Join(albumDir, "PXL_5678.mp4"), "video")
+	writeTestFile(t, filepath.Join(albumDir, "PXL_5678.mp4.json"), `{"title":"PXL_5678.mp4","photoTakenTime":{"timestamp":"1700000000"}}`)
+
+	plans, err := DiscoverMediaPlan(root, ProcessOptions{})
+	if err != nil {
+		t.Fatalf("DiscoverMediaPlan returned error: %v", err)
+	}
+	if len(plans) != 2 {
+		t.Fatalf("expected 2 plans, got %d", len(plans))
+	}
+
+	var imagePlan *MediaPlan
+	for i := range plans {
+		if !plans[i].IsVideo {
+			imagePlan = &plans[i]
+			break
+		}
+	}
+	if imagePlan == nil {
+		t.Fatal("expected an image plan")
+	}
+	if imagePlan.MatchStatus != MatchStatusMatched {
+		t.Fatalf("expected matched status, got %s", imagePlan.MatchStatus)
+	}
+	if imagePlan.MatchStrategy != MatchStrategyPartner {
+		t.Fatalf("expected partner-sidecar strategy, got %s", imagePlan.MatchStrategy)
+	}
+	if imagePlan.PartnerPath == "" {
+		t.Fatal("expected partner path to be populated")
+	}
+}
+
+func TestDiscoverMediaPlanLinksPartnerMediaWithoutSidecar(t *testing.T) {
+	root := t.TempDir()
+	albumDir := filepath.Join(root, "Photos from 2023")
+	if err := os.MkdirAll(albumDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeTestFile(t, filepath.Join(albumDir, "MVIMG_0001.jpg"), "image")
+	writeTestFile(t, filepath.Join(albumDir, "MVIMG_0001.mp4"), "video")
+
+	plans, err := DiscoverMediaPlan(root, ProcessOptions{})
+	if err != nil {
+		t.Fatalf("DiscoverMediaPlan returned error: %v", err)
+	}
+	if len(plans) != 2 {
+		t.Fatalf("expected 2 plans, got %d", len(plans))
+	}
+
+	for i := range plans {
+		if plans[i].PartnerPath == "" {
+			t.Fatalf("expected partner path for %s", plans[i].FileName)
+		}
+		if plans[i].MatchStatus != MatchStatusUnmatched {
+			t.Fatalf("expected unmatched status without sidecar for %s, got %s", plans[i].FileName, plans[i].MatchStatus)
+		}
+	}
+}
+
 func TestDiscoverMediaPlanMarksAmbiguousMatches(t *testing.T) {
 	root := t.TempDir()
 	albumDir := filepath.Join(root, "Photos from 2022")

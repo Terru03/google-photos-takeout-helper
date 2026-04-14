@@ -41,7 +41,7 @@ func DetectExifTool() (*ExifToolInfo, error) {
 		return nil, fmt.Errorf("ExifTool is required for metadata, verification, and MOV restoration. Install it or use a bundled release: %w", err)
 	}
 
-	output, err := exec.Command(path, "-ver").CombinedOutput()
+	output, err := newHiddenCommand(path, "-ver").CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("ExifTool was found at %s but could not be executed: %w: %s", path, err, strings.TrimSpace(string(output)))
 	}

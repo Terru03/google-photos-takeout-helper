@@ -33,16 +33,18 @@ func ParseConflictPolicy(value string) (ConflictPolicy, error) {
 }
 
 type ProcessOptions struct {
-	UseSymlinks         bool
-	WriteMetadata       bool
-	MonthSubfolders     bool
-	IgnoreAlbums        bool
-	Flatten             bool
-	RestoreMOVExtension bool
-	Deduplicate         bool
-	DryRun              bool
-	VerifyWrites        bool
-	ConflictPolicy      ConflictPolicy
+	UseSymlinks              bool
+	WriteMetadata            bool
+	MonthSubfolders          bool
+	IgnoreAlbums             bool
+	Flatten                  bool
+	CreateMotionPhotos       bool
+	DeleteSourceAfterSuccess bool
+	RestoreMOVExtension      bool
+	Deduplicate              bool
+	DryRun                   bool
+	VerifyWrites             bool
+	ConflictPolicy           ConflictPolicy
 }
 
 func DefaultProcessOptions() ProcessOptions {
@@ -104,6 +106,7 @@ type MediaPlan struct {
 	OutputName        string
 	SidecarPath       string
 	PartnerPath       string
+	PartnerRelPath    string
 	MatchStatus       MatchStatus
 	MatchStrategy     MatchStrategy
 	MatchCandidates   []string
@@ -126,6 +129,8 @@ type ProcessRecord struct {
 	SourceHash         string                  `json:"sourceHash,omitempty"`
 	SourceSize         int64                   `json:"sourceSize,omitempty"`
 	SidecarPath        string                  `json:"sidecarPath,omitempty"`
+	PartnerPath        string                  `json:"partnerPath,omitempty"`
+	PartnerRelPath     string                  `json:"partnerRelPath,omitempty"`
 	OutputPath         string                  `json:"outputPath,omitempty"`
 	MatchStatus        MatchStatus             `json:"matchStatus"`
 	MatchStrategy      MatchStrategy           `json:"matchStrategy,omitempty"`

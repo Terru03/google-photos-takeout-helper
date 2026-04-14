@@ -32,6 +32,11 @@ type folderCatalog struct {
 	sidecars     []folderSidecarCandidate
 }
 
+type partnerIndexBucket struct {
+	images []int
+	videos []int
+}
+
 func DiscoverMediaPlan(sourceRoot string, options ProcessOptions) ([]MediaPlan, error) {
 	folders := make(map[string]*folderCatalog)
 
@@ -132,37 +137,73 @@ func buildSidecarCandidate(path string) folderSidecarCandidate {
 
 func resolveFolderPlans(sourceRoot string, bundle *folderCatalog) []MediaPlan {
 	plans := make([]MediaPlan, 0, len(bundle.media))
-	byNormalizedImageKey := make(map[string]MediaPlan)
 
 	for _, mediaPath := range bundle.media {
-		plan := resolveDirectMatch(sourceRoot, bundle, mediaPath)
-		plans = append(plans, plan)
-		if !plan.IsVideo && plan.MatchStatus == MatchStatusMatched && plan.SidecarPath != "" {
-			for _, key := range buildNameKeys(plan.FileName) {
-				if _, exists := byNormalizedImageKey[key]; !exists {
-					byNormalizedImageKey[key] = plan
-				}
+		plans = append(plans, resolveDirectMatch(sourceRoot, bundle, mediaPath))
+	}
+
+	byExactStem := make(map[string]partnerIndexBucket)
+	byPartnerKey := make(map[string]partnerIndexBucket)
+	for i := range plans {
+		plan := plans[i]
+
+		if stem := normalizedMediaStem(plan.FileName); stem != "" {
+			bucket := byExactStem[stem]
+			if plan.IsVideo {
+				bucket.videos = appendUniqueIndex(bucket.videos, i)
+			} else {
+				bucket.images = appendUniqueIndex(bucket.images, i)
 			}
+			byExactStem[stem] = bucket
+		}
+
+		for _, key := range buildPartnerKeys(plan.FileName) {
+			bucket := byPartnerKey[key]
+			if plan.IsVideo {
+				bucket.videos = appendUniqueIndex(bucket.videos, i)
+			} else {
+				bucket.images = appendUniqueIndex(bucket.images, i)
+			}
+			byPartnerKey[key] = bucket
 		}
 	}
 
-	for i, plan := range plans {
-		if !plan.IsVideo || plan.MatchStatus == MatchStatusMatched {
+	partnerIndexes := make([]int, len(plans))
+	for i := range partnerIndexes {
+		partnerIndexes[i] = -1
+	}
+
+	for i := range plans {
+		partnerIdx, ok := resolvePartnerIndex(i, plans, byExactStem, byPartnerKey)
+		if !ok {
+			continue
+		}
+		partnerIndexes[i] = partnerIdx
+		plans[i].PartnerPath = plans[partnerIdx].SourcePath
+		plans[i].PartnerRelPath = plans[partnerIdx].RelativePath
+	}
+
+	for i := range plans {
+		if plans[i].MatchStatus == MatchStatusMatched {
 			continue
 		}
 
-		for _, key := range buildNameKeys(plan.FileName) {
-			if partner, ok := byNormalizedImageKey[key]; ok {
-				plan.SidecarPath = partner.SidecarPath
-				plan.PartnerPath = partner.SourcePath
-				plan.Metadata = partner.Metadata
-				plan.MatchStatus = MatchStatusMatched
-				plan.MatchStrategy = MatchStrategyPartner
-				plan.MatchCandidates = []string{partner.SidecarPath}
-				plans[i] = plan
-				break
-			}
+		partnerIdx := partnerIndexes[i]
+		if partnerIdx < 0 {
+			continue
 		}
+
+		partner := plans[partnerIdx]
+		if partner.MatchStatus != MatchStatusMatched || partner.SidecarPath == "" {
+			continue
+		}
+
+		plans[i].SidecarPath = partner.SidecarPath
+		plans[i].Metadata = partner.Metadata
+		plans[i].MatchStatus = MatchStatusMatched
+		plans[i].MatchStrategy = MatchStrategyPartner
+		plans[i].MatchCandidates = []string{partner.SidecarPath}
+		plans[i].MatchScore = partner.MatchScore
 	}
 
 	return plans
@@ -276,6 +317,47 @@ func matchScore(mediaNameLower string, mediaKeys map[string]struct{}, candidate 
 	return 0
 }
 
+func resolvePartnerIndex(planIndex int, plans []MediaPlan, byExactStem map[string]partnerIndexBucket, byPartnerKey map[string]partnerIndexBucket) (int, bool) {
+	plan := plans[planIndex]
+
+	if stem := normalizedMediaStem(plan.FileName); stem != "" {
+		if partnerIdx, ok := uniqueOppositeIndex(byExactStem[stem], plan.IsVideo); ok {
+			return partnerIdx, true
+		}
+	}
+
+	candidates := make(map[int]struct{})
+	for _, key := range buildPartnerKeys(plan.FileName) {
+		for _, idx := range oppositeIndexes(byPartnerKey[key], plan.IsVideo) {
+			candidates[idx] = struct{}{}
+		}
+	}
+
+	if len(candidates) != 1 {
+		return 0, false
+	}
+
+	for idx := range candidates {
+		return idx, true
+	}
+	return 0, false
+}
+
+func uniqueOppositeIndex(bucket partnerIndexBucket, isVideo bool) (int, bool) {
+	indexes := oppositeIndexes(bucket, isVideo)
+	if len(indexes) != 1 {
+		return 0, false
+	}
+	return indexes[0], true
+}
+
+func oppositeIndexes(bucket partnerIndexBucket, isVideo bool) []int {
+	if isVideo {
+		return bucket.images
+	}
+	return bucket.videos
+}
+
 func buildNameKeys(name string) []string {
 	normalized := strings.ToLower(strings.TrimSpace(stripJSONSuffix(name)))
 	if normalized == "" {
@@ -318,6 +400,32 @@ func buildNameKeys(name string) []string {
 		}
 	}
 
+	return keys
+}
+
+func buildPartnerKeys(name string) []string {
+	keys := make([]string, 0, 8)
+	for _, key := range buildNameKeys(name) {
+		normalized := strings.ToLower(strings.TrimSpace(key))
+		if normalized == "" {
+			continue
+		}
+
+		if duplicateAfterExtRE.MatchString(normalized) {
+			match := duplicateAfterExtRE.FindStringSubmatch(normalized)
+			keys = appendUniqueKey(keys, match[1])
+			keys = appendUniqueKey(keys, match[1]+"("+match[3]+")")
+			continue
+		}
+
+		ext := filepath.Ext(normalized)
+		if ext == "" {
+			keys = appendUniqueKey(keys, normalized)
+			continue
+		}
+
+		keys = appendUniqueKey(keys, strings.TrimSuffix(normalized, ext))
+	}
 	return keys
 }
 
@@ -376,6 +484,24 @@ func commonPrefixLen(left string, right string) int {
 	return count
 }
 
+func normalizedMediaStem(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == "" {
+		return ""
+	}
+
+	if duplicateAfterExtRE.MatchString(normalized) {
+		match := duplicateAfterExtRE.FindStringSubmatch(normalized)
+		return match[1] + "(" + match[3] + ")"
+	}
+
+	ext := filepath.Ext(normalized)
+	if ext == "" {
+		return normalized
+	}
+	return strings.TrimSuffix(normalized, ext)
+}
+
 func semanticExtension(name string) string {
 	normalized := strings.ToLower(strings.TrimSpace(stripJSONSuffix(name)))
 	if normalized == "" {
@@ -386,4 +512,13 @@ func semanticExtension(name string) string {
 		return match[2]
 	}
 	return filepath.Ext(normalized)
+}
+
+func appendUniqueIndex(indexes []int, value int) []int {
+	for _, existing := range indexes {
+		if existing == value {
+			return indexes
+		}
+	}
+	return append(indexes, value)
 }

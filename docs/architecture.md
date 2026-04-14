@@ -11,7 +11,8 @@ GoogleTakeoutFixer is designed as a deterministic archive-repair tool for Google
 3. Resolve matches using deterministic filename and metadata heuristics.
 4. Restore metadata, deduplicate exact copies, and write audit state.
 5. Verify written metadata when enabled.
-6. Emit machine-readable and human-readable reports under `OUTPUT/.gtf/`.
+6. Optionally run a post-processing MotionPhoto2 sweep to rebuild Windows-viewable Samsung/Google Motion Photos in-place.
+7. Emit machine-readable and human-readable reports under `OUTPUT/.gtf/`.
 
 ## Matching Algorithm
 
@@ -25,9 +26,11 @@ It intentionally avoids “first JSON with same prefix wins” behavior. Instead
    - duplicate suffixes like `name(1).jpg` and `name.jpg(1).json`
    - edited variants like `-edited`
    - long-name truncation in Takeout JSON exports
-4. Live-photo / partner-file fallback for videos that share metadata with a sibling image.
+4. Live-photo / partner-file fallback for sibling photo/video pairs, with sidecar inheritance in either direction when only one side matches directly.
 
 If multiple candidates tie at the best score, the file is marked `ambiguous` and reported instead of silently picking one.
+
+Partner relationships are also recorded in the audit output even when neither side has a JSON sidecar, so live/motion-photo exports remain explainable instead of looking like unrelated misses.
 
 ## State Model
 
@@ -52,6 +55,12 @@ Important rules:
 - GPS coordinates and timezone offsets are restored together when possible.
 - Video writes target QuickTime/Keys/XMP tags instead of relying on photo-only EXIF tags.
 - Verification reads metadata back with ExifTool after write when `--verify` is enabled.
+
+## Motion Photo Strategy
+
+When `CreateMotionPhotos` / `--motion-photos` is enabled, GoogleTakeoutFixer runs [MotionPhoto2](https://github.com/PetrVys/MotionPhoto2) against the repaired output tree using recursive overwrite, incremental mode, and EXIF-based matching.
+
+This design choice keeps the main Takeout repair pipeline deterministic while delegating platform-specific live-photo remuxing to a tool that already targets Samsung/Google Motion Photo compatibility for Windows Photos.
 
 ## Runtime Paths
 

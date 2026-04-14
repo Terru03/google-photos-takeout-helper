@@ -61,6 +61,11 @@ func Process(
 	} else if exifInfo != nil {
 		Log(LoggerInfo, "Using ExifTool %s from %s", exifInfo.Version, exifInfo.Path)
 	}
+	if motionPhotoInfo, err := ValidateMotionPhotoDependencies(options); err != nil {
+		return err
+	} else if motionPhotoInfo != nil {
+		Log(LoggerInfo, "Using MotionPhoto2 from %s", motionPhotoInfo.Path)
+	}
 
 	if options.WriteMetadata || options.VerifyWrites || options.RestoreMOVExtension {
 		if err := InitializeExifTool(); err != nil {
@@ -122,6 +127,45 @@ func Process(
 		progressCh <- progress
 	}
 
+	motionPhotoCleanupTargets := BuildMotionPhotoCleanupTargets(plans, stateStore)
+	motionPhotoResult := RunMotionPhotoPass(motionPhotoCleanupTargets, options)
+	motionPhotoResult.StandaloneVideoCandidates = len(motionPhotoCleanupTargets)
+	if len(motionPhotoCleanupTargets) > 0 && ShouldCleanupEmbeddedMotionPhotoVideos(motionPhotoResult) {
+		motionPhotoResult.StandaloneVideosDeleted,
+			motionPhotoResult.StandaloneVideosSkipped,
+			motionPhotoResult.CleanupErrors = CleanupEmbeddedMotionPhotoVideos(motionPhotoCleanupTargets)
+	}
+	if motionPhotoResult.Enabled {
+		report.SetMotionPhotoPass(motionPhotoResult)
+		if motionPhotoResult.Error != "" {
+			Log(LoggerError, "Motion photo pass failed: %s", motionPhotoResult.Error)
+		} else {
+			Log(LoggerInfo, "Motion photo pass finished with status %s", motionPhotoResult.Status)
+		}
+		if motionPhotoResult.StandaloneVideoCandidates > 0 && ShouldCleanupEmbeddedMotionPhotoVideos(motionPhotoResult) {
+			Log(
+				LoggerInfo,
+				"Live video cleanup: %d deleted, %d skipped, %d errors",
+				motionPhotoResult.StandaloneVideosDeleted,
+				motionPhotoResult.StandaloneVideosSkipped,
+				motionPhotoResult.CleanupErrors,
+			)
+		}
+	}
+
+	sourceCleanupResult := CleanupSourceRootAfterSuccess(ctx, sourcePath, outputPath, report, options)
+	if sourceCleanupResult.Enabled {
+		report.SetSourceCleanup(sourceCleanupResult)
+		switch sourceCleanupResult.Status {
+		case SourceCleanupStatusDeleted:
+			Log(LoggerInfo, "Deleted input folder after clean run: %s", sourceCleanupResult.Path)
+		case SourceCleanupStatusFailed:
+			Log(LoggerError, "Input cleanup failed: %s", sourceCleanupResult.Error)
+		default:
+			Log(LoggerInfo, "Kept input folder: %s", sourceCleanupResult.Reason)
+		}
+	}
+
 	return nil
 }
 
@@ -135,10 +179,12 @@ func processPlan(
 		SourcePath:         plan.SourcePath,
 		SourceRelPath:      plan.RelativePath,
 		SidecarPath:        plan.SidecarPath,
+		PartnerPath:        plan.PartnerPath,
+		PartnerRelPath:     plan.PartnerRelPath,
 		MatchStatus:        plan.MatchStatus,
 		MatchStrategy:      plan.MatchStrategy,
 		MatchCandidates:    plan.MatchCandidates,
-		UsedPartnerSidecar: plan.PartnerPath != "",
+		UsedPartnerSidecar: plan.MatchStrategy == MatchStrategyPartner && plan.SidecarPath != "" && plan.PartnerPath != "",
 		UpdatedAt:          time.Now().UTC(),
 	}
 

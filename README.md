@@ -16,7 +16,8 @@ This can lead to problems:
 ## Solution
 GoogleTakeoutFixer solves these issues by:
 - **Writing metadata** into photos and videos using Google Takeout JSON data.
-- **Matching media to sidecars deterministically**, including duplicate suffixes, edited variants, long-name truncation, and live photo partner files.
+- **Matching media to sidecars deterministically**, including duplicate suffixes, edited variants, long-name truncation, and live/motion-photo partner files.
+- **Optionally rebuilding Windows-viewable motion photos** with MotionPhoto2 by converting eligible image/video pairs into Samsung/Google Motion Photos.
 - **Deduplicating exact duplicate media** across year and album folders by reusing the first output copy instead of storing duplicates again.
 - **Resuming safely** with a persisted state file so failed runs can continue instead of restarting from scratch.
 - **Producing audit reports** with matched, unmatched, ambiguous, duplicate, conflict, and verification results.
@@ -53,6 +54,9 @@ To use GoogleTakeoutFixer, you must have downloaded your photos from Google Take
 2. Extract the downloaded archive.
 3. Run the executable file.
 
+> [!NOTE]
+> Creating Windows Motion Photos is optional and requires [MotionPhoto2](https://github.com/PetrVys/MotionPhoto2) to be installed separately or placed beside the app binary.
+
 > [!IMPORTANT]
 > When running the executable, a window about security can pop-up if you are using Windows. **Click "more info" and "run anyway"**.
 
@@ -63,8 +67,10 @@ To use GoogleTakeoutFixer, you must have downloaded your photos from Google Take
     - **"Write metadata"**: Writes metadata from JSON files into the media files. May not be necessary.
     - **"Use symlinks for albums"**: Creates file links instead of duplicating files for albums.
     - **"Ignore album folders"**: Ignores album folders and only processes year folders.
-    - **"Create month subfolders"**: Creates month subfolders (labeled 1-12) inside of the output folders.
+    - **"Create month subfolders"**: Creates month subfolders like `1 - January` through `12 - December` inside of the output folders.
     - **"Flatten output structure"**: Puts all files directly in the output folder.
+    - **"Create Windows Motion Photos (MotionPhoto2)"**: Runs MotionPhoto2 after processing to rebuild eligible still+video pairs into Samsung/Google Motion Photos that the Windows Photos app can play.
+    - **"Delete input folder after clean run"**: Deletes the original input folder only after a fully clean run with zero unmatched, ambiguous, or error records.
     - **"Restore .MOV file extension"**: Restores .MOV file extension in case the Major Brand EXIF field says "Apple QuickTime (.MOV/QT)" (See #2).
 4. For a safe default, click **"Recommended Safe Mode"**. For a no-write trust check, click **"Audit Only"**.
 5. Click **"Start processing"** and wait for the process to finish. The time it takes depends on the number of photos and videos you have.
@@ -82,8 +88,10 @@ You can also use GoogleTakeoutFixer through the CLI. Use the following flags:
 - `--symlink`: Use symlinks inside of albums instead of duplicating images
 - `--skip-metadata`: Skip writing metadata to files
 - `--ignore-albums`: Ignore album folders and only process year folders
-- `--month-subfolders`: Create month subfolders (labeled 1-12) inside of folders
+- `--month-subfolders`: Create month subfolders like `1 - January` through `12 - December`
 - `--flatten`: Flatten the folder structure and put all files directly in the output folder
+- `--motion-photos`: Rebuild eligible image/video pairs into Samsung/Google Motion Photos with MotionPhoto2
+- `--delete-source`: Delete the original input folder only after a fully clean run with zero unmatched, ambiguous, or error records
 - `--restore-mov`: Restore .MOV file extension in case the Major Brand EXIF field says \"Apple QuickTime (.MOV/QT)\" (See #2)
 - `--dry-run`: Plan the run and emit reports without writing files
 - `--verify`: Read metadata back with ExifTool after writing to validate the result
@@ -102,6 +110,8 @@ During each run, the tool writes resumable state and audit artifacts under `OUTP
 - `reports/latest.txt`: human-readable audit summary
 - `reports/latest.json`: detailed machine-readable report
 - `logs/*.txt`: per-run logs written beside the repaired library instead of the current working directory
+
+If `--motion-photos` is enabled, the audit report also records whether the MotionPhoto2 pass completed successfully.
 
 GUI preferences are saved in your user config directory as `GoogleTakeoutFixer/config.json`.
 

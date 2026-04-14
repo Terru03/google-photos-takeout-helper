@@ -35,37 +35,44 @@ func Main() {
 	a := app.New()
 	a.SetIcon(resourceGoogleTakeoutFixerPng)
 	w := a.NewWindow("GoogleTakeoutFixer " + version.Tag)
-	w.Resize(fyne.NewSize(680, 620))
+	w.Resize(fyne.NewSize(680, 560))
 
 	var (
-		useSymlinks         = defaults.UseSymlinks
-		writeMetadata       = defaults.WriteMetadata
-		flatten             = defaults.Flatten
-		ignoreAlbums        = defaults.IgnoreAlbums
-		monthSubfolders     = defaults.MonthSubfolders
-		restoreMOVExtension = defaults.RestoreMOVExtension
-		deduplicate         = defaults.Deduplicate
-		dryRun              = defaults.DryRun
-		verifyWrites        = defaults.VerifyWrites
-		conflictPolicy      = defaults.ConflictPolicy
+		useSymlinks              = defaults.UseSymlinks
+		writeMetadata            = defaults.WriteMetadata
+		flatten                  = defaults.Flatten
+		ignoreAlbums             = defaults.IgnoreAlbums
+		monthSubfolders          = defaults.MonthSubfolders
+		createMotionPhotos       = defaults.CreateMotionPhotos
+		deleteSourceAfterSuccess = defaults.DeleteSourceAfterSuccess
+		restoreMOVExtension      = defaults.RestoreMOVExtension
+		deduplicate              = defaults.Deduplicate
+		dryRun                   = defaults.DryRun
+		verifyWrites             = defaults.VerifyWrites
+		conflictPolicy           = defaults.ConflictPolicy
 	)
 
 	if conflictPolicy == "" {
 		conflictPolicy = fixer.ConflictMerge
 	}
 
+	uiReady := false
+	var updateCheckboxStates func()
+
 	currentOptions := func() fixer.ProcessOptions {
 		return fixer.ProcessOptions{
-			UseSymlinks:         useSymlinks,
-			WriteMetadata:       writeMetadata,
-			MonthSubfolders:     monthSubfolders,
-			IgnoreAlbums:        ignoreAlbums,
-			Flatten:             flatten,
-			RestoreMOVExtension: restoreMOVExtension,
-			Deduplicate:         deduplicate,
-			DryRun:              dryRun,
-			VerifyWrites:        verifyWrites,
-			ConflictPolicy:      conflictPolicy,
+			UseSymlinks:              useSymlinks,
+			WriteMetadata:            writeMetadata,
+			MonthSubfolders:          monthSubfolders,
+			IgnoreAlbums:             ignoreAlbums,
+			Flatten:                  flatten,
+			CreateMotionPhotos:       createMotionPhotos,
+			DeleteSourceAfterSuccess: deleteSourceAfterSuccess,
+			RestoreMOVExtension:      restoreMOVExtension,
+			Deduplicate:              deduplicate,
+			DryRun:                   dryRun,
+			VerifyWrites:             verifyWrites,
+			ConflictPolicy:           conflictPolicy,
 		}
 	}
 
@@ -138,14 +145,26 @@ func Main() {
 	}
 
 	updateDependencyStatus := func() {
-		info, err := fixer.ValidateProcessingDependencies(currentOptions())
+		options := currentOptions()
+		info, err := fixer.ValidateProcessingDependencies(options)
 		switch {
 		case err != nil:
 			dependencyLabel.SetText("Dependency check: " + err.Error())
-		case info == nil:
-			dependencyLabel.SetText("Dependency check: ExifTool not needed for the current option set.")
-		default:
+			return
+		}
+
+		motionInfo, motionErr := fixer.ValidateMotionPhotoDependencies(options)
+		switch {
+		case motionErr != nil:
+			dependencyLabel.SetText("Dependency check: " + motionErr.Error())
+		case info == nil && motionInfo == nil:
+			dependencyLabel.SetText("Dependency check: no external tools needed for the current option set.")
+		case info != nil && motionInfo != nil:
+			dependencyLabel.SetText(fmt.Sprintf("Dependency check: ExifTool %s ready (%s) | MotionPhoto2 ready (%s)", info.Version, info.Path, motionInfo.Path))
+		case info != nil:
 			dependencyLabel.SetText(fmt.Sprintf("Dependency check: ExifTool %s ready (%s)", info.Version, info.Path))
+		case motionInfo != nil:
+			dependencyLabel.SetText(fmt.Sprintf("Dependency check: MotionPhoto2 ready (%s)", motionInfo.Path))
 		}
 	}
 
@@ -191,12 +210,19 @@ func Main() {
 
 	useLinksCheckbox := widget.NewCheck("Use symlinks for albums", func(value bool) {
 		useSymlinks = value
+		if !uiReady {
+			return
+		}
+		updateCheckboxStates()
 		savePreferences()
 	})
 	useLinksCheckbox.SetChecked(useSymlinks)
 
 	writeMetadataCheckbox := widget.NewCheck("Write metadata", func(value bool) {
 		writeMetadata = value
+		if !uiReady {
+			return
+		}
 		updateDependencyStatus()
 		savePreferences()
 	})
@@ -204,24 +230,58 @@ func Main() {
 
 	ignoreAlbumsCheckbox := widget.NewCheck("Ignore album folders", func(value bool) {
 		ignoreAlbums = value
+		if !uiReady {
+			return
+		}
+		updateCheckboxStates()
 		savePreferences()
 	})
 	ignoreAlbumsCheckbox.SetChecked(ignoreAlbums)
 
 	monthSubfoldersCheckbox := widget.NewCheck("Create month subfolders", func(value bool) {
 		monthSubfolders = value
+		if !uiReady {
+			return
+		}
+		updateCheckboxStates()
 		savePreferences()
 	})
 	monthSubfoldersCheckbox.SetChecked(monthSubfolders)
 
 	flattenCheckbox := widget.NewCheck("Flatten album structure", func(value bool) {
 		flatten = value
+		if !uiReady {
+			return
+		}
+		updateCheckboxStates()
 		savePreferences()
 	})
 	flattenCheckbox.SetChecked(flatten)
 
+	createMotionPhotosCheckbox := widget.NewCheck("Create Windows Motion Photos (MotionPhoto2)", func(value bool) {
+		createMotionPhotos = value
+		if !uiReady {
+			return
+		}
+		updateDependencyStatus()
+		savePreferences()
+	})
+	createMotionPhotosCheckbox.SetChecked(createMotionPhotos)
+
+	deleteSourceCheckbox := widget.NewCheck("Delete input folder after clean run", func(value bool) {
+		deleteSourceAfterSuccess = value
+		if !uiReady {
+			return
+		}
+		savePreferences()
+	})
+	deleteSourceCheckbox.SetChecked(deleteSourceAfterSuccess)
+
 	restoreMOVExtensionCheckbox := widget.NewCheck("Restore .MOV file extension", func(value bool) {
 		restoreMOVExtension = value
+		if !uiReady {
+			return
+		}
 		updateDependencyStatus()
 		savePreferences()
 	})
@@ -229,18 +289,27 @@ func Main() {
 
 	deduplicateCheckbox := widget.NewCheck("Deduplicate exact copies", func(value bool) {
 		deduplicate = value
+		if !uiReady {
+			return
+		}
 		savePreferences()
 	})
 	deduplicateCheckbox.SetChecked(deduplicate)
 
 	dryRunCheckbox := widget.NewCheck("Dry run with audit report", func(value bool) {
 		dryRun = value
+		if !uiReady {
+			return
+		}
 		savePreferences()
 	})
 	dryRunCheckbox.SetChecked(dryRun)
 
 	verifyWritesCheckbox := widget.NewCheck("Verify metadata after write", func(value bool) {
 		verifyWrites = value
+		if !uiReady {
+			return
+		}
 		updateDependencyStatus()
 		savePreferences()
 	})
@@ -258,12 +327,15 @@ func Main() {
 				return
 			}
 			conflictPolicy = parsed
+			if !uiReady {
+				return
+			}
 			savePreferences()
 		},
 	)
 	conflictPolicySelect.SetSelected(string(conflictPolicy))
 
-	updateCheckboxStates := func() {
+	updateCheckboxStates = func() {
 		setEnabled := func(cb *widget.Check, enabled bool) {
 			if enabled {
 				cb.Enable()
@@ -301,11 +373,13 @@ func Main() {
 		toggle := func(btn interface {
 			Enable()
 			Disable()
-		}) { if enabled {
-			btn.Enable()
-		} else {
-			btn.Disable()
-		} }
+		}) {
+			if enabled {
+				btn.Enable()
+			} else {
+				btn.Disable()
+			}
+		}
 
 		toggle(inputButton)
 		toggle(outputButton)
@@ -319,6 +393,8 @@ func Main() {
 		toggle(ignoreAlbumsCheckbox)
 		toggle(monthSubfoldersCheckbox)
 		toggle(flattenCheckbox)
+		toggle(createMotionPhotosCheckbox)
+		toggle(deleteSourceCheckbox)
 		toggle(restoreMOVExtensionCheckbox)
 		toggle(deduplicateCheckbox)
 		toggle(dryRunCheckbox)
@@ -352,6 +428,15 @@ func Main() {
 		}
 		if exifInfo != nil {
 			fixer.Log(fixer.LoggerInfo, "Using ExifTool %s from %s", exifInfo.Version, exifInfo.Path)
+		}
+		motionInfo, err := fixer.ValidateMotionPhotoDependencies(options)
+		if err != nil {
+			fixer.Log(fixer.LoggerError, "%v", err)
+			updateDependencyStatus()
+			return
+		}
+		if motionInfo != nil {
+			fixer.Log(fixer.LoggerInfo, "Using MotionPhoto2 from %s", motionInfo.Path)
 		}
 
 		savePreferences()
@@ -479,6 +564,7 @@ func Main() {
 	updateSelectionSummary()
 	updateCheckboxStates()
 	updateDependencyStatus()
+	uiReady = true
 
 	folderButtons := container.NewGridWithColumns(2, inputButton, outputButton)
 	pathPreview := container.NewVBox(
@@ -494,10 +580,12 @@ func Main() {
 		ignoreAlbumsCheckbox,
 		monthSubfoldersCheckbox,
 		flattenCheckbox,
+		createMotionPhotosCheckbox,
 		restoreMOVExtensionCheckbox,
 		deduplicateCheckbox,
 		dryRunCheckbox,
 		verifyWritesCheckbox,
+		deleteSourceCheckbox,
 	)
 	conflictPolicyRow := container.NewGridWithColumns(2, widget.NewLabel("Conflict policy"), conflictPolicySelect)
 	presetRow := container.NewGridWithColumns(2, recommendedButton, dryRunPresetButton)
@@ -524,7 +612,11 @@ func Main() {
 		progressLabel,
 	)
 
-	mainContent := container.NewBorder(topContent, nil, nil, nil, logEntry)
+	topScroll := container.NewVScroll(topContent)
+	topScroll.SetMinSize(fyne.NewSize(0, 280))
+	logPanel := container.NewBorder(widget.NewLabel("Log"), nil, nil, nil, logEntry)
+	mainContent := container.NewVSplit(topScroll, logPanel)
+	mainContent.Offset = 0.68
 	w.SetContent(container.NewPadded(mainContent))
 	w.ShowAndRun()
 }
