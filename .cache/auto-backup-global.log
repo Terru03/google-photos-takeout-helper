@@ -1,1 +1,14 @@
 ﻿[2026-04-14 03:49:24] Global auto-backup watcher started for C:\Users\david\Documents\AI\Google Photos Takeout Helper (remote=private-origin)
+[2026-04-14 03:49:26] commit> [main 65e8272] update: auto-backup-global.log, auto-backup-global.pid, .gitignore +24 (2026-04-14 03:49:25) [skip ci]
+[2026-04-14 03:49:26] commit>  27 files changed, 1821 insertions(+), 114 deletions(-)
+[2026-04-14 03:49:26] commit>  create mode 100644 .cache/auto-backup-global.log
+[2026-04-14 03:49:26] commit>  create mode 100644 .cache/auto-backup-global.pid
+[2026-04-14 03:49:26] commit>  create mode 100644 MotionPhoto2_Windows_v2.7.7.zip
+[2026-04-14 03:49:26] commit>  create mode 100644 internal/fixer/command_other.go
+[2026-04-14 03:49:26] commit>  create mode 100644 internal/fixer/command_windows.go
+[2026-04-14 03:49:26] commit>  create mode 100644 internal/fixer/file_handler_test.go
+[2026-04-14 03:49:26] commit>  create mode 100644 internal/fixer/motionphoto_handler.go
+[2026-04-14 03:49:26] commit>  create mode 100644 internal/fixer/motionphoto_test.go
+[2026-04-14 03:49:26] commit>  create mode 100644 internal/fixer/source_cleanup.go
+[2026-04-14 03:49:26] commit>  create mode 100644 scripts/run-ui.ps1
+[2026-04-14 03:49:33] Watcher error: To https://github.com/Terru03/google-photos-takeout-helper.git
