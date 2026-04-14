@@ -23,6 +23,7 @@ type RunReportSummary struct {
 	ExistingSkipped    int `json:"existingSkipped"`
 	ConflictsFound     int `json:"conflictsFound"`
 	PartnerSidecarUsed int `json:"partnerSidecarUsed"`
+	ApproxDedupBytesSaved int64 `json:"approxDedupBytesSaved"`
 	Errors             int `json:"errors"`
 }
 
@@ -102,6 +103,7 @@ func (r *RunReport) Add(record ProcessRecord) {
 		r.Summary.ExistingSkipped++
 	case OperationHardlinked, OperationSymlinked:
 		r.Summary.DuplicatesLinked++
+		r.Summary.ApproxDedupBytesSaved += record.SourceSize
 	case OperationDuplicateCopied:
 		r.Summary.DuplicatesCopied++
 	case OperationError:
@@ -237,11 +239,15 @@ func (r *RunReport) toText() string {
 	fmt.Fprintf(&b, "  Metadata verified: %d\n", r.Summary.MetadataVerified)
 	fmt.Fprintf(&b, "  Duplicate links created: %d\n", r.Summary.DuplicatesLinked)
 	fmt.Fprintf(&b, "  Duplicate copies kept: %d\n", r.Summary.DuplicatesCopied)
+	fmt.Fprintf(&b, "  Approx dedup space saved: %s\n", FormatBytes(r.Summary.ApproxDedupBytesSaved))
 	fmt.Fprintf(&b, "  Resumed/skipped from state: %d\n", r.Summary.Resumed)
 	fmt.Fprintf(&b, "  Existing files skipped: %d\n", r.Summary.ExistingSkipped)
 	fmt.Fprintf(&b, "  Partner sidecar matches: %d\n", r.Summary.PartnerSidecarUsed)
 	fmt.Fprintf(&b, "  Conflicts found: %d\n", r.Summary.ConflictsFound)
 	fmt.Fprintf(&b, "  Errors: %d\n", r.Summary.Errors)
+	if r.Summary.DuplicatesLinked > 0 {
+		fmt.Fprintf(&b, "  Note: hardlinks save disk space, but Explorer can still show near full size.\n")
+	}
 
 	fmt.Fprintf(&b, "\nProblem Files\n")
 	problems := 0
