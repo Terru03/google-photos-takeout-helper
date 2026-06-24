@@ -1,0 +1,325 @@
+package batch
+
+import (
+	"archive/zip"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/feloex/GoogleTakeoutFixer/internal/fixer"
+)
+
+func FindTakeoutZips(roots []string) ([]ZipItem, error) {
+	var items []ZipItem
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+
+		info, err := os.Stat(root)
+		if err != nil {
+			return nil, fmt.Errorf("zip root %s: %w", root, err)
+		}
+
+		if !info.IsDir() {
+			if LooksLikeTakeoutZip(root) {
+				item, err := newZipItem(root, info)
+				if err != nil {
+					return nil, err
+				}
+				items = append(items, item)
+			}
+			continue
+		}
+
+		err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				fixer.Log(fixer.LoggerWarn, "Skip %s: %v", path, walkErr)
+				if entry != nil && entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			if !LooksLikeTakeoutZip(path) {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			item, err := newZipItem(path, info)
+			if err != nil {
+				return err
+			}
+			items = append(items, item)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	sort.SliceStable(items, func(i int, j int) bool {
+		return strings.ToLower(items[i].Path) < strings.ToLower(items[j].Path)
+	})
+	return items, nil
+}
+
+func LooksLikeTakeoutZip(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	return filepath.Ext(base) == ".zip" && strings.Contains(base, takeoutZipNameNeedle)
+}
+
+func newZipItem(path string, info os.FileInfo) (ZipItem, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return ZipItem{}, err
+	}
+	uncompressedBytes, err := zipUncompressedBytes(absPath)
+	if err != nil {
+		return ZipItem{}, fmt.Errorf("read ZIP %s: %w", absPath, err)
+	}
+	item := ZipItem{
+		Path:              absPath,
+		Name:              filepath.Base(absPath),
+		SourceDrive:       sourceDrive(absPath),
+		SizeBytes:         info.Size(),
+		UncompressedBytes: uncompressedBytes,
+		ModTime:           info.ModTime().UTC(),
+	}
+	item.Fingerprint = zipFingerprint(item)
+	return item, nil
+}
+
+func zipUncompressedBytes(path string) (int64, error) {
+	reader, err := zip.OpenReader(path)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = reader.Close()
+	}()
+
+	const maxInt64 = uint64(1<<63 - 1)
+	var total uint64
+	for _, file := range reader.File {
+		if file.FileInfo().IsDir() {
+			continue
+		}
+		total += file.UncompressedSize64
+		if total > maxInt64 {
+			return 0, fmt.Errorf("ZIP uncompressed size is too large")
+		}
+	}
+	return int64(total), nil
+}
+
+func ExtractZip(zipPath string, destDir string) error {
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = reader.Close()
+	}()
+
+	destAbs, err := filepath.Abs(destDir)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(destAbs, 0o755); err != nil {
+		return err
+	}
+
+	for _, file := range reader.File {
+		name, err := safeZipEntryName(file.Name)
+		if err != nil {
+			return err
+		}
+		if name == "" {
+			continue
+		}
+
+		target := filepath.Join(destAbs, name)
+		if !pathWithin(destAbs, target) {
+			return fmt.Errorf("unsafe ZIP entry path %q", file.Name)
+		}
+
+		mode := file.FileInfo().Mode()
+		if mode&os.ModeSymlink != 0 {
+			return fmt.Errorf("refuse to extract symlink ZIP entry %q", file.Name)
+		}
+		if file.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+
+		source, err := file.Open()
+		if err != nil {
+			return err
+		}
+		dest, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode.Perm())
+		if err != nil {
+			_ = source.Close()
+			return err
+		}
+		_, copyErr := io.Copy(dest, source)
+		closeSourceErr := source.Close()
+		closeDestErr := dest.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeSourceErr != nil {
+			return closeSourceErr
+		}
+		if closeDestErr != nil {
+			return closeDestErr
+		}
+	}
+	return nil
+}
+
+func LocateGooglePhotosFolder(root string) (string, error) {
+	direct := []string{
+		filepath.Join(root, "Takeout", "Google Photos"),
+		filepath.Join(root, "Google Photos"),
+	}
+	var candidates []string
+	seen := make(map[string]struct{})
+	for _, candidate := range direct {
+		if isDir(candidate) {
+			abs, err := filepath.Abs(candidate)
+			if err != nil {
+				return "", err
+			}
+			candidates = append(candidates, abs)
+			seen[strings.ToLower(filepath.Clean(abs))] = struct{}{}
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	if len(candidates) > 1 {
+		return "", fmt.Errorf("more than one Google Photos folder found: %s", strings.Join(candidates, "; "))
+	}
+
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		if entry.Name() != "Google Photos" {
+			return nil
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return err
+		}
+		key := strings.ToLower(filepath.Clean(abs))
+		if _, ok := seen[key]; ok {
+			return nil
+		}
+		candidates = append(candidates, abs)
+		seen[key] = struct{}{}
+		return filepath.SkipDir
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("no Takeout\\Google Photos or Google Photos folder found in %s", root)
+	}
+	if len(candidates) > 1 {
+		return "", fmt.Errorf("more than one Google Photos folder found: %s", strings.Join(candidates, "; "))
+	}
+	return candidates[0], nil
+}
+
+func requiredWorkBytes(item ZipItem, marginBytes int64) int64 {
+	need := item.UncompressedBytes
+	if item.SizeBytes > need {
+		need = item.SizeBytes
+	}
+	if marginBytes <= 0 {
+		marginBytes = defaultMarginBytes
+	}
+	return need + marginBytes
+}
+
+func maxRequiredWorkBytes(items []ZipItem, marginBytes int64) int64 {
+	var maxNeed int64
+	for _, item := range items {
+		need := requiredWorkBytes(item, marginBytes)
+		if need > maxNeed {
+			maxNeed = need
+		}
+	}
+	return maxNeed
+}
+
+func zipFingerprint(item ZipItem) string {
+	return fmt.Sprintf("%s|%d|%d", strings.ToLower(item.Name), item.SizeBytes, item.ModTime.UnixNano())
+}
+
+func sourceDrive(path string) string {
+	volume := filepath.VolumeName(path)
+	if volume != "" {
+		return strings.ToUpper(volume)
+	}
+	if filepath.IsAbs(path) {
+		return string(filepath.Separator)
+	}
+	return ""
+}
+
+func safeZipEntryName(name string) (string, error) {
+	name = strings.TrimSpace(strings.ReplaceAll(name, "\\", "/"))
+	if name == "" {
+		return "", nil
+	}
+	clean := filepath.Clean(filepath.FromSlash(name))
+	if clean == "." {
+		return "", nil
+	}
+	if filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" || clean == ".." ||
+		strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("unsafe ZIP entry path %q", name)
+	}
+	return clean, nil
+}
+
+func isDir(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func pathWithin(parent string, child string) bool {
+	parentAbs, err := filepath.Abs(parent)
+	if err != nil {
+		return false
+	}
+	childAbs, err := filepath.Abs(child)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(parentAbs, childAbs)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}

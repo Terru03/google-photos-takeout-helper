@@ -22,6 +22,7 @@ GoogleTakeoutFixer solves these issues by:
 - **Resuming safely** with a persisted state file so failed runs can continue instead of restarting from scratch.
 - **Producing audit reports** with matched, unmatched, ambiguous, duplicate, conflict, and verification results.
 - **Verifying metadata after write** when requested, so the tool can prove what actually landed in the file.
+- **Processing huge split Takeout ZIP exports one ZIP at a time** without re-zipping final output or deleting original ZIP files.
 
 ## Preview
 <p align="center">
@@ -46,7 +47,8 @@ To use GoogleTakeoutFixer, you must have downloaded your photos from Google Take
 5. Click "Create export" and follow the instructions.
 
 > [!NOTE]
-> - If your Google Takeout exceeds the 50 GB limit and is split into multiple archives, extract all the archives and move the extracted files into a single folder. This ensures that GoogleTakeoutFixer can process all your files correctly.
+> - If your Google Takeout is small enough, extract all the archives and move the extracted files into a single folder. This ensures that GoogleTakeoutFixer can process all your files correctly.
+> - If your Google Takeout is many terabytes and split across many 50 GB ZIP files, use **Batch Takeout ZIP Mode** instead. It extracts and processes one ZIP at a time.
 > - Select the folder named "Google Photos" as your input folder. This folder should contain subfolders like "Photos from (year)" and folders with the names of your albums. Do not select a parent folder of "Google Photos".
 
 ### 2. Installation
@@ -105,8 +107,48 @@ Example usage:
 ./GoogleTakeoutFixer --input "/path/to/takeout/Google Photos/" --output "/path/to/output/folder/" --verify
 ```
 
+Batch Takeout ZIP Mode flags:
+- `--batch-zips`: Process Takeout ZIPs one at a time
+- `--zip-root "PATH"`: Search a ZIP file or folder for Takeout ZIP files; repeat for multiple drives/folders
+- `--work "PATH"`: Temporary extraction/work folder
+- `--output "PATH"`: Final unzipped output library
+- `--auto-drives`: Scan Windows drives and choose clear defaults
+- `--ask-on-ambiguous`: Ask before choosing ambiguous drives or continuing after a problem report
+- `--keep-temp-on-error`: Keep extracted temp files when a ZIP fails or needs review
+- `--reprocess`: Process ZIPs even if the batch manifest already marks them successful
+- `--dry-run`: Scan and write a planned manifest without extracting ZIPs or writing fixed media
+- `--verify`: Verify written metadata by reading it back with ExifTool
+
+### Huge Takeout ZIP workflow (Windows)
+For a multi-terabyte Google Photos Takeout, keep the original ZIP files on your storage drives and write the final fixed library as normal folders and files.
+
+Example layout:
+- ZIP storage drives: `D:\Takeout_Zips`, `E:\Takeout_Zips`, `F:\Takeout_Zips`, or other external HDD folders
+- Final output drive: `B:\Google_Photos_Final` on the 8 TB `Backup B` / `B:` drive
+- Fast temp work folder: `C:\GTF_Work` if the SSD has enough free space for one ZIP extraction plus margin
+
+Safe dry run:
+```powershell
+.\gtf-cli.exe --batch-zips --zip-root "D:\Takeout_Zips" --zip-root "F:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final" --dry-run
+```
+
+Real run:
+```powershell
+.\gtf-cli.exe --batch-zips --zip-root "D:\Takeout_Zips" --zip-root "F:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final" --verify
+```
+
+Batch mode safety rules:
+- Original ZIP files are never moved or deleted.
+- Final output is never zipped back up.
+- Final output and `.gtf/state.jsonl` stay in the output folder, so dedupe works across multiple ZIPs and later runs.
+- ZIP source roots, temp work folder, and final output folder must not overlap.
+- After a clean ZIP run, only that ZIP's temporary extracted folder is deleted.
+- If the audit report has unmatched, ambiguous, or error records, the batch stops unless you used `--ask-on-ambiguous` and choose to continue.
+- Resume uses `OUTPUT\.gtf\batch_manifest.jsonl`; ZIPs marked `success` are skipped unless `--reprocess` is set.
+
 During each run, the tool writes resumable state and audit artifacts under `OUTPUT/.gtf/`:
 - `state.jsonl`: append-only processing state used for resumable/idempotent runs
+- `batch_manifest.jsonl`: batch ZIP status and resume manifest
 - `reports/latest.txt`: human-readable audit summary
 - `reports/latest.json`: detailed machine-readable report
 - `logs/*.txt`: per-run logs written beside the repaired library instead of the current working directory

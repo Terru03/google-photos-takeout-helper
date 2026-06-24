@@ -15,6 +15,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+	"github.com/feloex/GoogleTakeoutFixer/internal/batch"
 	"github.com/feloex/GoogleTakeoutFixer/internal/fixer"
 	version "github.com/feloex/GoogleTakeoutFixer/internal/version"
 	"github.com/ncruces/zenity"
@@ -31,6 +32,9 @@ func Main() {
 
 	inputPath := prefs.LastInputPath
 	outputPath := prefs.LastOutputPath
+	hugeTakeoutMode := false
+	batchZipRoots := []string{}
+	batchWorkPath := ""
 
 	a := app.New()
 	a.SetIcon(resourceGoogleTakeoutFixerPng)
@@ -109,6 +113,10 @@ func Main() {
 	var startButton *widget.Button
 	var inputButton *widget.Button
 	var outputButton *widget.Button
+	var hugeModeButton *widget.Button
+	var addZipRootButton *widget.Button
+	var workFolderButton *widget.Button
+	var scanDrivesButton *widget.Button
 	var recommendedButton *widget.Button
 	var dryRunPresetButton *widget.Button
 
@@ -139,7 +147,19 @@ func Main() {
 		if outputPath != "" {
 			outputText = outputPath
 		}
-		selectionSummary.SetText(fmt.Sprintf("Input: %s\nOutput: %s", inputText, outputText))
+		modeText := "Standard folder mode"
+		if hugeTakeoutMode {
+			zipText := "not selected"
+			if len(batchZipRoots) > 0 {
+				zipText = strings.Join(batchZipRoots, "; ")
+			}
+			workText := "auto"
+			if batchWorkPath != "" {
+				workText = batchWorkPath
+			}
+			modeText = fmt.Sprintf("Huge Takeout Mode\nZIP roots: %s\nWork: %s", zipText, workText)
+		}
+		selectionSummary.SetText(fmt.Sprintf("Mode: %s\nInput: %s\nOutput: %s", modeText, inputText, outputText))
 		inputPathEntry.SetText(inputText)
 		outputPathEntry.SetText(outputText)
 	}
@@ -206,6 +226,56 @@ func Main() {
 		outputButton.SetText("Output: " + filepath.Base(outputPath))
 		updateSelectionSummary()
 		savePreferences()
+	})
+
+	hugeModeButton = widget.NewButton("Huge Takeout Mode: Off", func() {
+		hugeTakeoutMode = !hugeTakeoutMode
+		if hugeTakeoutMode {
+			hugeModeButton.SetText("Huge Takeout Mode: On")
+			fixer.Log(fixer.LoggerWarn, "Huge Takeout Mode keeps ZIP files, writes normal folders/files, and uses a separate temp work folder.")
+		} else {
+			hugeModeButton.SetText("Huge Takeout Mode: Off")
+		}
+		updateSelectionSummary()
+	})
+
+	addZipRootButton = widget.NewButtonWithIcon("Add ZIP Folder", theme.FolderOpenIcon(), func() {
+		dir, err := zenity.SelectFile(zenity.Title("Select Folder With Takeout ZIPs"), zenity.Directory())
+		if err != nil {
+			return
+		}
+		batchZipRoots = append(batchZipRoots, dir)
+		hugeTakeoutMode = true
+		hugeModeButton.SetText("Huge Takeout Mode: On")
+		fixer.Log(fixer.LoggerInfo, "Added ZIP root: %s", dir)
+		updateSelectionSummary()
+	})
+
+	workFolderButton = widget.NewButtonWithIcon("Select Work Folder", theme.FolderOpenIcon(), func() {
+		dir, err := zenity.SelectFile(zenity.Title("Select Temporary Work Folder"), zenity.Directory())
+		if err != nil {
+			return
+		}
+		batchWorkPath = dir
+		hugeTakeoutMode = true
+		hugeModeButton.SetText("Huge Takeout Mode: On")
+		fixer.Log(fixer.LoggerInfo, "Work folder: %s", dir)
+		updateSelectionSummary()
+	})
+
+	scanDrivesButton = widget.NewButton("Scan Drives", func() {
+		drives, err := batch.DetectDrives()
+		if err != nil {
+			fixer.Log(fixer.LoggerError, "Drive scan failed: %v", err)
+			return
+		}
+		if len(drives) == 0 {
+			fixer.Log(fixer.LoggerWarn, "No drives found")
+			return
+		}
+		for _, drive := range drives {
+			fixer.Log(fixer.LoggerInfo, "Drive: %s", batch.FormatDrive(drive))
+		}
 	})
 
 	useLinksCheckbox := widget.NewCheck("Use symlinks for albums", func(value bool) {
@@ -383,6 +453,10 @@ func Main() {
 
 		toggle(inputButton)
 		toggle(outputButton)
+		toggle(hugeModeButton)
+		toggle(addZipRootButton)
+		toggle(workFolderButton)
+		toggle(scanDrivesButton)
 		toggle(startButton)
 		toggle(recommendedButton)
 		toggle(dryRunPresetButton)
@@ -414,6 +488,67 @@ func Main() {
 	}
 
 	startButton = widget.NewButtonWithIcon("Start Processing", theme.MediaPlayIcon(), func() {
+		if hugeTakeoutMode {
+			if len(batchZipRoots) == 0 {
+				fixer.Log(fixer.LoggerError, "Add at least one ZIP folder for Huge Takeout Mode")
+				return
+			}
+			options := currentOptions()
+			options.DeleteSourceAfterSuccess = false
+
+			savePreferences()
+			setControlsEnabled(false)
+			progressBar.SetValue(0)
+			progressLabel.SetText("Preparing ZIP batch...")
+			reportPath = ""
+			if outputPath != "" {
+				reportPath = filepath.Join(outputPath, ".gtf", "batch_manifest.jsonl")
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			cancelFn = cancel
+			cancelButton.Enable()
+
+			fixer.SafeGo("gui-batch-process", func() {
+				result, err := batch.Run(ctx, batch.Options{
+					ZipRoots:        batchZipRoots,
+					WorkDir:         batchWorkPath,
+					OutputDir:       outputPath,
+					AutoDrives:      true,
+					AskOnAmbiguous:  false,
+					KeepTempOnError: true,
+					ProcessOptions:  options,
+				})
+
+				fyne.Do(func() {
+					if err != nil && ctx.Err() == nil {
+						fixer.Log(fixer.LoggerError, "Batch error: %s", err.Error())
+						progressLabel.SetText("Batch stopped")
+					} else if ctx.Err() != nil {
+						fixer.Log(fixer.LoggerInfo, "Cancelled")
+						progressLabel.SetText("Cancelled")
+					} else {
+						outputPath = result.OutputDir
+						batchWorkPath = result.WorkDir
+						reportPath = result.ManifestPath
+						fixer.Log(fixer.LoggerInfo, "Batch done: processed=%d skipped=%d planned=%d", result.Processed, result.Skipped, result.Planned)
+						progressLabel.SetText(fmt.Sprintf("Batch done: %d processed, %d skipped", result.Processed, result.Skipped))
+						updateSelectionSummary()
+						if outputPath != "" {
+							openOutputButton.Enable()
+						}
+						if reportPath != "" {
+							openReportButton.Enable()
+						}
+					}
+					cancelButton.Disable()
+					cancelFn = nil
+					setControlsEnabled(true)
+				})
+			})
+			return
+		}
+
 		if err := fixer.ValidateProcessPaths(inputPath, outputPath); err != nil {
 			fixer.Log(fixer.LoggerError, "%v", err)
 			return
@@ -567,6 +702,7 @@ func Main() {
 	uiReady = true
 
 	folderButtons := container.NewGridWithColumns(2, inputButton, outputButton)
+	batchModeControls := container.NewGridWithColumns(4, hugeModeButton, addZipRootButton, workFolderButton, scanDrivesButton)
 	pathPreview := container.NewVBox(
 		widget.NewLabel("Google Takeout folder"),
 		inputPathEntry,
@@ -598,6 +734,7 @@ func Main() {
 	topContent := container.NewVBox(
 		hintLabel,
 		dependencyLabel,
+		batchModeControls,
 		folderButtons,
 		selectionSummary,
 		pathPreview,
