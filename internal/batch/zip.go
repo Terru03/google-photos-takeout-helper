@@ -118,7 +118,7 @@ func newZipItem(path string, info os.FileInfo) (ZipItem, error) {
 	if err != nil {
 		return ZipItem{}, err
 	}
-	uncompressedBytes, err := zipUncompressedBytes(absPath)
+	uncompressedBytes, mediaFiles, err := zipStats(absPath)
 	if err != nil {
 		return ZipItem{}, fmt.Errorf("read ZIP %s: %w", absPath, err)
 	}
@@ -128,16 +128,17 @@ func newZipItem(path string, info os.FileInfo) (ZipItem, error) {
 		SourceDrive:       sourceDrive(absPath),
 		SizeBytes:         info.Size(),
 		UncompressedBytes: uncompressedBytes,
+		MediaFiles:        mediaFiles,
 		ModTime:           info.ModTime().UTC(),
 	}
 	item.Fingerprint = zipFingerprint(item)
 	return item, nil
 }
 
-func zipUncompressedBytes(path string) (int64, error) {
+func zipStats(path string) (int64, int, error) {
 	reader, err := zip.OpenReader(path)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer func() {
 		_ = reader.Close()
@@ -145,16 +146,20 @@ func zipUncompressedBytes(path string) (int64, error) {
 
 	const maxInt64 = uint64(1<<63 - 1)
 	var total uint64
+	mediaFiles := 0
 	for _, file := range reader.File {
 		if file.FileInfo().IsDir() {
 			continue
 		}
 		total += file.UncompressedSize64
+		if fixer.IsMediaFile(file.Name) {
+			mediaFiles++
+		}
 		if total > maxInt64 {
-			return 0, fmt.Errorf("ZIP uncompressed size is too large")
+			return 0, 0, fmt.Errorf("ZIP uncompressed size is too large")
 		}
 	}
-	return int64(total), nil
+	return int64(total), mediaFiles, nil
 }
 
 func ExtractZip(zipPath string, destDir string) error {

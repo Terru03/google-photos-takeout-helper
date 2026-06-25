@@ -57,6 +57,10 @@ func Preflight(options Options) (PreflightReport, error) {
 	}
 	for _, item := range zips {
 		report.TotalZipSize += item.SizeBytes
+		report.EstimatedMediaFiles += item.MediaFiles
+		if item.SizeBytes > report.LargestZipBytes {
+			report.LargestZipBytes = item.SizeBytes
+		}
 		report.ZipPaths = append(report.ZipPaths, item.Path)
 	}
 
@@ -110,7 +114,9 @@ func FormatPreflightReport(report PreflightReport) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Huge Takeout preflight\n")
 	fmt.Fprintf(&b, "ZIP files: %d\n", report.ZipCount)
+	fmt.Fprintf(&b, "Photos/videos estimated: %d\n", report.EstimatedMediaFiles)
 	fmt.Fprintf(&b, "Total ZIP size: %s\n", fixer.FormatBytes(report.TotalZipSize))
+	fmt.Fprintf(&b, "Largest ZIP: %s\n", fixer.FormatBytes(report.LargestZipBytes))
 	fmt.Fprintf(&b, "Output free: %s\n", fixer.FormatBytes(report.OutputFreeBytes))
 	fmt.Fprintf(&b, "Work free: %s\n", fixer.FormatBytes(report.WorkFreeBytes))
 	fmt.Fprintf(&b, "Estimated minimum work space: %s\n", fixer.FormatBytes(report.EstimatedMinWorkBytes))

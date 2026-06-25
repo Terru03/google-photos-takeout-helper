@@ -43,6 +43,7 @@ type ZipItem struct {
 	SourceDrive       string    `json:"sourceDrive"`
 	SizeBytes         int64     `json:"sizeBytes"`
 	UncompressedBytes int64     `json:"uncompressedBytes"`
+	MediaFiles        int       `json:"mediaFiles"`
 	ModTime           time.Time `json:"modTime"`
 	Fingerprint       string    `json:"fingerprint"`
 }
@@ -117,7 +118,9 @@ type BatchProgress struct {
 
 type PreflightReport struct {
 	ZipCount              int      `json:"zipCount"`
+	EstimatedMediaFiles   int      `json:"estimatedMediaFiles"`
 	TotalZipSize          int64    `json:"totalZipSize"`
+	LargestZipBytes       int64    `json:"largestZipBytes"`
 	OutputFreeBytes       int64    `json:"outputFreeBytes"`
 	WorkFreeBytes         int64    `json:"workFreeBytes"`
 	EstimatedMinWorkBytes int64    `json:"estimatedMinWorkBytes"`
