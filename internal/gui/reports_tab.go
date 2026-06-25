@@ -13,13 +13,20 @@ import (
 func (s *guiState) buildReportsTab() fyne.CanvasObject {
 	s.loadReportIfAvailable()
 	if s.runReport == nil {
-		return container.NewVBox(
+		body := "Run a job to generate a report."
+		actions := []fyne.CanvasObject{infoBanner("Reports are stored in .gtf next to your output library.")}
+		if s.outputPath != "" {
+			body = "No latest report file found in the selected output folder yet."
+			actions = append(actions, secondaryButton("Open .gtf folder", func() { s.openPath(reportPath(s.outputPath)) }))
+		}
+		items := []fyne.CanvasObject{
 			container.NewGridWithColumns(2,
 				emptyCard("No ZIP sources added", "Setup will show selected sources."),
-				emptyCard("No reports yet", "Run a job to generate a report."),
+				emptyCard("No reports yet", body),
 			),
-			infoBanner("Reports are stored in .gtf next to your output library."),
-		)
+		}
+		items = append(items, actions...)
+		return container.NewVBox(items...)
 	}
 
 	rows := []reportRow{
@@ -43,6 +50,7 @@ func (s *guiState) buildReportsTab() fyne.CanvasObject {
 				secondaryButton("Suspicious dates CSV", func() { s.openPath(reportPath(s.outputPath, "reports", "suspicious_dates.csv")) }),
 				secondaryButton("All records JSON", func() { s.openPath(reportPath(s.outputPath, "reports", "latest.json")) }),
 				secondaryButton("Errors only", func() { s.openPath(reportPath(s.outputPath, "reports", "latest.txt")) }),
+				secondaryButton("Open .gtf folder", func() { s.openPath(reportPath(s.outputPath)) }),
 			),
 		),
 		infoBanner("Reports are stored in .gtf next to your output library."),

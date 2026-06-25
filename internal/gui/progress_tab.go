@@ -109,11 +109,11 @@ func (s *guiState) buildProcessingScreen() fyne.CanvasObject {
 		card("STAGE", stageRow(s.stage)),
 		card("LOG", logBox(s.logLines)),
 		container.NewHBox(
-			dangerButton("Stop after this ZIP", s.stopAfterCurrentZIP),
-			dangerButton("Cancel immediately", s.cancelImmediately),
+			dangerButton("Stop After Current ZIP", s.stopAfterCurrentZIP),
+			dangerButton("Cancel Immediately", s.cancelImmediately),
 			layout.NewSpacer(),
 		),
-		errorBanner("Cancel can stop file work mid-run. Stop after this ZIP is safer and preferred for huge exports."),
+		errorBanner("Stop After Current ZIP waits for current archive to finish. Cancel Immediately may stop file work mid-run."),
 	)
 }
 

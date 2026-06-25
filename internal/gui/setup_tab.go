@@ -10,19 +10,14 @@ import (
 )
 
 func (s *guiState) buildSetupTab() fyne.CanvasObject {
-	modeFolderButton := secondaryButton("Already extracted folder", func() {
+	modeFolderButton := choiceButton("Already extracted folder", s.mode == modeFolder, func() {
 		s.mode = modeFolder
 		s.refreshTabs(0)
 	})
-	modeBatchButton := secondaryButton("Batch ZIP processing", func() {
+	modeBatchButton := choiceButton("Batch ZIP processing", s.mode == modeBatch, func() {
 		s.mode = modeBatch
 		s.refreshTabs(0)
 	})
-	if s.mode == modeFolder {
-		modeFolderButton.Importance = widget.HighImportance
-	} else {
-		modeBatchButton.Importance = widget.HighImportance
-	}
 
 	sourceSection := s.buildSourceSection()
 	outputSection := pathPickerRow("OUTPUT FOLDER", s.outputPath, "Change folder", s.selectOutputFolder)
@@ -110,15 +105,18 @@ func (s *guiState) buildSourceSection() fyne.CanvasObject {
 			if len(label) > 80 {
 				label = fmt.Sprintf("...%s", label[len(label)-77:])
 			}
-			button := secondaryButton(label, func() {
+			button := choiceButton(label, root == s.selectedRoot, func() {
 				s.selectedRoot = root
 				s.refreshTabs(0)
 			})
-			if root == s.selectedRoot {
-				button.Importance = widget.HighImportance
-			}
+			button.minWidth = 240
 			chips.Add(button)
 		}
+	}
+
+	remove := secondaryButton("Remove selected", s.removeSelectedRoot)
+	if s.selectedRoot == "" {
+		remove.Disable()
 	}
 
 	return card("SOURCE FOLDERS",
@@ -126,7 +124,7 @@ func (s *guiState) buildSourceSection() fyne.CanvasObject {
 		container.NewHBox(
 			folderButton("Add folder", s.addZipFolder),
 			secondaryButton("Add ZIP files", s.addZipFiles),
-			secondaryButton("Remove selected", s.removeSelectedRoot),
+			remove,
 			layout.NewSpacer(),
 			smallText(fmt.Sprintf("%d selected", len(s.zipRoots))),
 		),

@@ -15,6 +15,7 @@ func (s *guiState) buildOptionsTab() fyne.CanvasObject {
 		s.options.Deduplicate = true
 		s.options.DryRun = false
 		s.options.ConflictPolicy = fixer.ConflictMerge
+		s.options.DeleteSourceAfterSuccess = false
 		s.savePreferences()
 		s.refreshTabs(3)
 	})
@@ -25,6 +26,7 @@ func (s *guiState) buildOptionsTab() fyne.CanvasObject {
 		s.options.Deduplicate = true
 		s.options.DryRun = true
 		s.options.ConflictPolicy = fixer.ConflictMerge
+		s.options.DeleteSourceAfterSuccess = false
 		s.savePreferences()
 		s.refreshTabs(3)
 	})
@@ -58,9 +60,9 @@ func (s *guiState) buildOptionsTab() fyne.CanvasObject {
 
 	sourceDelete := s.check("Delete source folder after a clean run", &s.options.DeleteSourceAfterSuccess)
 	keepTemp := s.check("Keep temp folder if an error occurs", &s.keepTempOnErr)
-	destructive := widget.NewAccordion(widget.NewAccordionItem("Destructive options", coloredPanel(colRedBg, colRed, 7, container.NewVBox(
-		checkboxGrid(sourceDelete, keepTemp),
-		errorBanner("Delete source folder permanently removes your extracted Takeout copy. Make sure output completed without errors before enabling this."),
+	destructive := widget.NewAccordion(widget.NewAccordionItem("Advanced danger options", coloredPanel(colRedBg, colRed, cardRadius, container.NewVBox(
+		checkboxGrid(sourceDelete),
+		errorBanner("This can remove an extracted source folder after a clean folder-mode run. Batch ZIP mode ignores this, and source ZIP files are never deleted."),
 	))))
 	destructive.CloseAll()
 
@@ -89,6 +91,7 @@ func (s *guiState) buildOptionsTab() fyne.CanvasObject {
 		card("DEVELOPER / DIAGNOSTIC",
 			checkboxGrid(
 				s.check("Dry run", &s.options.DryRun),
+				keepTemp,
 			),
 			smallText("Logs and reports are written to .gtf beside output."),
 		),

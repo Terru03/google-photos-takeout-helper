@@ -10,7 +10,6 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/layout"
-	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/feloex/GoogleTakeoutFixer/internal/fixer"
 )
@@ -29,11 +28,11 @@ func card(title string, objects ...fyne.CanvasObject) fyne.CanvasObject {
 		items = append(items, sectionTitle(title))
 	}
 	items = append(items, objects...)
-	return coloredPanel(colPanel, colBorder, 7, container.NewVBox(items...))
+	return coloredPanel(colPanel, colBorder, cardRadius, container.NewVBox(items...))
 }
 
 func compactCard(objects ...fyne.CanvasObject) fyne.CanvasObject {
-	return coloredPanel(colPanel, colBorder, 7, container.NewVBox(objects...))
+	return coloredPanel(colPanel, colBorder, cardRadius, container.NewVBox(objects...))
 }
 
 func fieldBox(text string) fyne.CanvasObject {
@@ -41,8 +40,9 @@ func fieldBox(text string) fyne.CanvasObject {
 		text = "Not selected"
 	}
 	label := widget.NewLabel(text)
-	label.Wrapping = fyne.TextWrapWord
-	return coloredPanel(colField, colBorder, 5, label)
+	label.Wrapping = fyne.TextWrapOff
+	label.Truncation = fyne.TextTruncateEllipsis
+	return coloredPanel(colField, colBorder, fieldRadius, label)
 }
 
 func sectionTitle(text string) fyne.CanvasObject {
@@ -104,8 +104,7 @@ func statGrid(cards ...fyne.CanvasObject) fyne.CanvasObject {
 }
 
 func pathPickerRow(label string, path string, buttonText string, tap func()) fyne.CanvasObject {
-	button := widget.NewButton(buttonText, tap)
-	button.Importance = widget.LowImportance
+	button := secondaryButton(buttonText, tap)
 	return card(label, container.NewBorder(nil, nil, nil, button, fieldBox(path)))
 }
 
@@ -115,24 +114,6 @@ func checkboxGrid(checks ...*widget.Check) fyne.CanvasObject {
 		objects = append(objects, check)
 	}
 	return container.NewGridWithColumns(2, objects...)
-}
-
-func primaryButton(text string, tap func()) *widget.Button {
-	button := widget.NewButton(text, tap)
-	button.Importance = widget.HighImportance
-	return button
-}
-
-func secondaryButton(text string, tap func()) *widget.Button {
-	button := widget.NewButton(text, tap)
-	button.Importance = widget.LowImportance
-	return button
-}
-
-func dangerButton(text string, tap func()) *widget.Button {
-	button := widget.NewButton(text, tap)
-	button.Importance = widget.DangerImportance
-	return button
 }
 
 func progressSection(label string, value float64) fyne.CanvasObject {
@@ -171,11 +152,11 @@ func logBox(lines []string) fyne.CanvasObject {
 		start = len(lines) - 12
 	}
 	body := strings.Join(lines[start:], "\n")
-	text := widget.NewLabel(body)
+	text := widget.NewLabelWithStyle(body, fyne.TextAlignLeading, fyne.TextStyle{Monospace: true})
 	text.Wrapping = fyne.TextWrapWord
 	scroll := container.NewVScroll(text)
 	scroll.SetMinSize(fyne.NewSize(0, 150))
-	return coloredPanel(color.NRGBA{R: 0x17, G: 0x18, B: 0x16, A: 0xff}, colBorder, 5, scroll)
+	return coloredPanel(color.NRGBA{R: 0x17, G: 0x18, B: 0x16, A: 0xff}, colBorder, fieldRadius, scroll)
 }
 
 func emptyCard(title string, body string) fyne.CanvasObject {
@@ -186,25 +167,7 @@ func emptyCard(title string, body string) fyne.CanvasObject {
 	bodyText := widget.NewLabel(body)
 	bodyText.Alignment = fyne.TextAlignCenter
 	bodyText.Wrapping = fyne.TextWrapWord
-	return coloredPanel(colPanelDark, color.NRGBA{R: 0x2b, G: 0x2d, B: 0x2a, A: 0xff}, 7, container.NewVBox(layout.NewSpacer(), titleText, bodyText, layout.NewSpacer()))
-}
-
-func titleBar() fyne.CanvasObject {
-	dot := func(label string, col color.Color) fyne.CanvasObject {
-		t := canvas.NewText(label, col)
-		t.TextStyle = fyne.TextStyle{Bold: true}
-		t.TextSize = 12
-		return t
-	}
-	dots := container.NewHBox(
-		dot("o", color.NRGBA{R: 0xff, G: 0x5f, B: 0x57, A: 0xff}),
-		dot("o", color.NRGBA{R: 0xff, G: 0xbd, B: 0x2e, A: 0xff}),
-		dot("o", color.NRGBA{R: 0x28, G: 0xc8, B: 0x40, A: 0xff}),
-	)
-	title := widget.NewLabel("Google Photos Takeout Helper")
-	title.TextStyle = fyne.TextStyle{Bold: true}
-	title.Alignment = fyne.TextAlignCenter
-	return coloredPanel(colTitleBar, colBorder, 7, container.NewBorder(nil, nil, dots, nil, title))
+	return coloredPanel(colPanelDark, color.NRGBA{R: 0x2b, G: 0x2d, B: 0x2a, A: 0xff}, cardRadius, container.NewVBox(layout.NewSpacer(), titleText, bodyText, layout.NewSpacer()))
 }
 
 func formatBytes(value int64) string {
@@ -236,14 +199,4 @@ func reportPath(output string, parts ...string) string {
 
 func separator() fyne.CanvasObject {
 	return widget.NewSeparator()
-}
-
-func iconButton(label string, res fyne.Resource, tap func()) *widget.Button {
-	button := widget.NewButtonWithIcon(label, res, tap)
-	button.Importance = widget.LowImportance
-	return button
-}
-
-func folderButton(label string, tap func()) *widget.Button {
-	return iconButton(label, theme.FolderOpenIcon(), tap)
 }

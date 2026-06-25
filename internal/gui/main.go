@@ -13,7 +13,6 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
-	"fyne.io/fyne/v2/container"
 	"github.com/feloex/GoogleTakeoutFixer/internal/batch"
 	"github.com/feloex/GoogleTakeoutFixer/internal/fixer"
 	version "github.com/feloex/GoogleTakeoutFixer/internal/version"
@@ -34,7 +33,6 @@ const (
 type guiState struct {
 	app    fyne.App
 	window fyne.Window
-	tabs   *container.AppTabs
 
 	mode          string
 	inputPath     string
@@ -63,6 +61,7 @@ type guiState struct {
 	logLines       []string
 	cancel         context.CancelFunc
 	stopAfterZip   atomic.Bool
+	selectedTab    int
 }
 
 func Main() {
@@ -86,8 +85,7 @@ func Main() {
 	a.SetIcon(resourceGoogleTakeoutFixerPng)
 
 	w := a.NewWindow("Google Photos Takeout Helper " + version.Tag)
-	w.Resize(fyne.NewSize(760, 720))
-	w.SetFixedSize(true)
+	w.Resize(fyne.NewSize(860, 760))
 
 	state := &guiState{
 		app:           a,
@@ -109,7 +107,6 @@ func Main() {
 	}
 	state.loadReportIfAvailable()
 	state.refreshTabs(0)
-	w.SetContent(container.NewPadded(container.NewBorder(titleBar(), nil, nil, nil, state.tabs)))
 	w.ShowAndRun()
 }
 
@@ -117,23 +114,25 @@ func (s *guiState) refreshTabs(selected int) {
 	if selected < 0 {
 		selected = 0
 	}
-	items := []*container.TabItem{
-		container.NewTabItem("Setup", s.buildSetupTab()),
-		container.NewTabItem("Progress", s.buildProgressTab()),
-		container.NewTabItem("Reports", s.buildReportsTab()),
-		container.NewTabItem("Options", s.buildOptionsTab()),
+	if selected >= tabCount {
+		selected = tabCount - 1
 	}
-	if s.tabs == nil {
-		s.tabs = container.NewAppTabs(items...)
-		s.tabs.SetTabLocation(container.TabLocationTop)
-	} else {
-		s.tabs.Items = items
-		s.tabs.Refresh()
+	s.selectedTab = selected
+
+	var content fyne.CanvasObject
+	switch selected {
+	case 1:
+		content = s.buildProgressTab()
+	case 2:
+		content = s.buildReportsTab()
+	case 3:
+		content = s.buildOptionsTab()
+	default:
+		content = s.buildSetupTab()
 	}
-	if selected >= len(items) {
-		selected = len(items) - 1
+	if s.window != nil {
+		s.window.SetContent(s.appChrome(content))
 	}
-	s.tabs.SelectIndex(selected)
 }
 
 func (s *guiState) currentOptions() fixer.ProcessOptions {
@@ -163,10 +162,7 @@ func (s *guiState) appendLog(line string) {
 		if len(s.logLines) > 300 {
 			s.logLines = s.logLines[len(s.logLines)-300:]
 		}
-		if s.tabs != nil {
-			selected := s.tabs.SelectedIndex()
-			s.refreshTabs(selected)
-		}
+		s.refreshTabs(s.selectedTab)
 	})
 }
 
@@ -451,7 +447,7 @@ func (s *guiState) startBatchProcessing() {
 				return
 			}
 			if ctx.Err() != nil {
-				s.setErrorNoRefresh("Cancelled immediately. Stop after this ZIP is safer for big exports.")
+				s.setErrorNoRefresh("Cancelled immediately. Stop After Current ZIP is safer for big exports.")
 				s.refreshTabs(1)
 				return
 			}
