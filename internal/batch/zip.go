@@ -38,6 +38,9 @@ func FindTakeoutZips(roots []string) ([]ZipItem, error) {
 
 		err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
+				if shouldSkipScanPath(path) {
+					return nil
+				}
 				fixer.Log(fixer.LoggerWarn, "Skip %s: %v", path, walkErr)
 				if entry != nil && entry.IsDir() {
 					return filepath.SkipDir
@@ -45,6 +48,9 @@ func FindTakeoutZips(roots []string) ([]ZipItem, error) {
 				return nil
 			}
 			if entry.IsDir() {
+				if shouldSkipScanDir(entry.Name()) {
+					return filepath.SkipDir
+				}
 				return nil
 			}
 			if !LooksLikeTakeoutZip(path) {
@@ -74,7 +80,37 @@ func FindTakeoutZips(roots []string) ([]ZipItem, error) {
 
 func LooksLikeTakeoutZip(path string) bool {
 	base := strings.ToLower(filepath.Base(path))
-	return filepath.Ext(base) == ".zip" && strings.Contains(base, takeoutZipNameNeedle)
+	if hasIncompleteDownloadSuffix(base) {
+		return false
+	}
+	return filepath.Ext(base) == ".zip"
+}
+
+func hasIncompleteDownloadSuffix(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".crdownload", ".part", ".tmp", ".fdmdownload", ".moving":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldSkipScanPath(path string) bool {
+	for _, part := range strings.Split(filepath.Clean(path), string(filepath.Separator)) {
+		if shouldSkipScanDir(part) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldSkipScanDir(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "$recycle.bin", "system volume information", "$winreagent", ".spotlight-v100", ".trashes":
+		return true
+	default:
+		return false
+	}
 }
 
 func newZipItem(path string, info os.FileInfo) (ZipItem, error) {
@@ -273,7 +309,7 @@ func maxRequiredWorkBytes(items []ZipItem, marginBytes int64) int64 {
 }
 
 func zipFingerprint(item ZipItem) string {
-	return fmt.Sprintf("%s|%d|%d", strings.ToLower(item.Name), item.SizeBytes, item.ModTime.UnixNano())
+	return fmt.Sprintf("%s|%d|%d", strings.ToLower(filepath.Clean(item.Path)), item.SizeBytes, item.ModTime.UnixNano())
 }
 
 func sourceDrive(path string) string {

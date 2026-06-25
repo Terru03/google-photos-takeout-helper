@@ -93,6 +93,7 @@ You can also use GoogleTakeoutFixer through the CLI. Use the following flags:
 - `--month-subfolders`: Create month subfolders like `1 - January` through `12 - December`
 - `--flatten`: Flatten the folder structure and put all files directly in the output folder
 - `--motion-photos`: Rebuild eligible image/video pairs into Samsung/Google Motion Photos with MotionPhoto2
+- `--keep-live-video`: Keep standalone live-video files after MotionPhoto2 embeds them
 - `--delete-source`: Delete the original input folder only after a fully clean run with zero unmatched, ambiguous, or error records
 - `--restore-mov`: Restore .MOV file extension in case the Major Brand EXIF field says \"Apple QuickTime (.MOV/QT)\" (See #2)
 - `--dry-run`: Plan the run and emit reports without writing files
@@ -115,8 +116,10 @@ Batch Takeout ZIP Mode flags:
 - `--auto-drives`: Scan Windows drives and choose clear defaults
 - `--ask-on-ambiguous`: Ask before choosing ambiguous drives or continuing after a problem report
 - `--keep-temp-on-error`: Keep extracted temp files when a ZIP fails or needs review
+- `--keep-live-video`: Keep standalone live-video files after MotionPhoto2 embeds them. In batch mode this is on by default; pass `--keep-live-video=false` only if you want cleanup after embedding.
+- `--preflight-only`: Scan ZIPs, check space and path risks, and write a preflight report without extracting ZIPs
 - `--reprocess`: Process ZIPs even if the batch manifest already marks them successful
-- `--dry-run`: Scan and write a planned manifest without extracting ZIPs or writing fixed media
+- `--dry-run`: Extract one ZIP at a time and run the fixer audit without writing fixed media
 - `--verify`: Verify written metadata by reading it back with ExifTool
 
 ### Huge Takeout ZIP workflow (Windows)
@@ -127,14 +130,29 @@ Example layout:
 - Final output drive: `B:\Google_Photos_Final` on the 8 TB `Backup B` / `B:` drive
 - Fast temp work folder: `C:\GTF_Work` if the SSD has enough free space for one ZIP extraction plus margin
 
-Safe dry run:
+Preflight only:
+```powershell
+.\gtf-cli.exe --batch-zips --preflight-only --zip-root "D:\Takeout_Zips" --zip-root "F:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final"
+```
+
+Dry run:
 ```powershell
 .\gtf-cli.exe --batch-zips --zip-root "D:\Takeout_Zips" --zip-root "F:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final" --dry-run
 ```
 
-Real run:
+Batch run:
 ```powershell
 .\gtf-cli.exe --batch-zips --zip-root "D:\Takeout_Zips" --zip-root "F:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final" --verify
+```
+
+Resume:
+```powershell
+.\gtf-cli.exe --batch-zips --zip-root "D:\Takeout_Zips" --zip-root "F:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final" --verify
+```
+
+Keep live videos explicitly:
+```powershell
+.\gtf-cli.exe --batch-zips --zip-root "D:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final" --motion-photos --keep-live-video
 ```
 
 Batch mode safety rules:
@@ -143,17 +161,21 @@ Batch mode safety rules:
 - Final output and `.gtf/state.jsonl` stay in the output folder, so dedupe works across multiple ZIPs and later runs.
 - ZIP source roots, temp work folder, and final output folder must not overlap.
 - After a clean ZIP run, only that ZIP's temporary extracted folder is deleted.
-- If the audit report has unmatched, ambiguous, or error records, the batch stops unless you used `--ask-on-ambiguous` and choose to continue.
-- Resume uses `OUTPUT\.gtf\batch_manifest.jsonl`; ZIPs marked `success` are skipped unless `--reprocess` is set.
+- Failed or interrupted ZIPs are retried on the next run. Completed ZIPs with the same path, size, and modified time are skipped unless `--reprocess` is set.
+- Resume uses `OUTPUT\.gtf\batch\manifest.jsonl`; ZIPs marked `completed` are skipped unless `--reprocess` is set.
 
 During each run, the tool writes resumable state and audit artifacts under `OUTPUT/.gtf/`:
 - `state.jsonl`: append-only processing state used for resumable/idempotent runs
-- `batch_manifest.jsonl`: batch ZIP status and resume manifest
+- `batch/manifest.jsonl`: batch ZIP status and resume manifest
+- `batch/preflight_latest.txt`: latest preflight report
 - `reports/latest.txt`: human-readable audit summary
 - `reports/latest.json`: detailed machine-readable report
+- `reports/suspicious_dates.csv`: files with missing, old, future, conflicting, or UTC-guessed timestamps
 - `logs/*.txt`: per-run logs written beside the repaired library instead of the current working directory
 
-If `--motion-photos` is enabled, the audit report also records whether the MotionPhoto2 pass completed successfully.
+If `--motion-photos` is enabled, the audit report records motion pairs detected, embeds completed, videos kept, videos deleted, and failures.
+
+In the desktop app, use the **Huge ZIP Batch** mode controls to add ZIP folders, pick the temp work folder, run **Preflight**, start the batch, or choose **Stop After Current ZIP**. Stop waits for the active ZIP to finish so the next run can resume from the manifest.
 
 GUI preferences are saved in your user config directory as `GoogleTakeoutFixer/config.json`.
 

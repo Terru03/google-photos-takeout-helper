@@ -8,16 +8,15 @@ import (
 )
 
 const (
-	statusStarted        = "started"
-	statusPlanned        = "planned"
-	statusSkippedResume  = "skipped-resume"
-	statusSuccess        = "success"
-	statusError          = "error"
-	statusNeedsReview    = "needs-review"
-	defaultOutputSubdir  = "Google_Photos_Final"
-	defaultWorkSubdir    = "GTF_Work"
-	defaultMarginBytes   = int64(25 * 1024 * 1024 * 1024)
-	takeoutZipNameNeedle = "takeout"
+	statusPending       = "pending"
+	statusExtracting    = "extracting"
+	statusProcessing    = "processing"
+	statusCompleted     = "completed"
+	statusFailed        = "failed"
+	statusInterrupted   = "interrupted"
+	defaultOutputSubdir = "Google_Photos_Final"
+	defaultWorkSubdir   = "GTF_Work"
+	defaultMarginBytes  = int64(25 * 1024 * 1024 * 1024)
 )
 
 type DriveKind string
@@ -49,18 +48,20 @@ type ZipItem struct {
 }
 
 type ManifestEntry struct {
-	ZipName           string                  `json:"zipName"`
-	ZipPath           string                  `json:"zipPath"`
-	ZipFingerprint    string                  `json:"zipFingerprint"`
-	SourceDrive       string                  `json:"sourceDrive"`
-	Status            string                  `json:"status"`
-	StartedAt         time.Time               `json:"startedAt,omitempty"`
-	FinishedAt        time.Time               `json:"finishedAt,omitempty"`
-	ReportPath        string                  `json:"reportPath,omitempty"`
-	ExtractedTempPath string                  `json:"extractedTempPath,omitempty"`
-	OutputFolder      string                  `json:"outputFolder"`
-	Error             string                  `json:"error,omitempty"`
-	Summary           *fixer.RunReportSummary `json:"summary,omitempty"`
+	ZipName        string                  `json:"zipName"`
+	ZipPath        string                  `json:"zipPath"`
+	ZipSize        int64                   `json:"zipSize"`
+	ZipModified    time.Time               `json:"zipModified"`
+	ZipFingerprint string                  `json:"zipFingerprint"`
+	SourceDrive    string                  `json:"sourceDrive"`
+	Status         string                  `json:"status"`
+	StartTime      time.Time               `json:"startTime,omitempty"`
+	EndTime        time.Time               `json:"endTime,omitempty"`
+	ReportPath     string                  `json:"reportPath,omitempty"`
+	ExtractedRoot  string                  `json:"extractedRoot,omitempty"`
+	OutputFolder   string                  `json:"outputFolder"`
+	Error          string                  `json:"error,omitempty"`
+	Summary        *fixer.RunReportSummary `json:"summary,omitempty"`
 }
 
 type PromptFunc func(question string, choices []string, allowMultiple bool) (string, error)
@@ -80,11 +81,14 @@ type Options struct {
 	AutoDrives        bool
 	AskOnAmbiguous    bool
 	KeepTempOnError   bool
+	PreflightOnly     bool
 	Reprocess         bool
 	SafetyMarginBytes int64
 	ProcessOptions    fixer.ProcessOptions
 	Prompt            PromptFunc
 	Process           ProcessFunc
+	Progress          func(BatchProgress)
+	StopAfterCurrent  func() bool
 }
 
 type Result struct {
@@ -95,4 +99,32 @@ type Result struct {
 	Processed    int
 	Skipped      int
 	Planned      int
+	Failed       int
+	Stopped      bool
+	Preflight    *PreflightReport
+}
+
+type BatchProgress struct {
+	CurrentZip    string
+	Completed     int
+	Total         int
+	FileProcessed int
+	FileTotal     int
+	CurrentFile   string
+	LatestError   string
+	ReportPath    string
+}
+
+type PreflightReport struct {
+	ZipCount              int      `json:"zipCount"`
+	TotalZipSize          int64    `json:"totalZipSize"`
+	OutputFreeBytes       int64    `json:"outputFreeBytes"`
+	WorkFreeBytes         int64    `json:"workFreeBytes"`
+	EstimatedMinWorkBytes int64    `json:"estimatedMinWorkBytes"`
+	OutputDir             string   `json:"outputDir"`
+	WorkDir               string   `json:"workDir"`
+	ManifestPath          string   `json:"manifestPath"`
+	StatePath             string   `json:"statePath"`
+	Warnings              []string `json:"warnings,omitempty"`
+	ZipPaths              []string `json:"zipPaths"`
 }

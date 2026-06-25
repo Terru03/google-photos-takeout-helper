@@ -25,9 +25,13 @@ type MotionPhotoPassResult struct {
 	Enabled                   bool                  `json:"enabled"`
 	Status                    MotionPhotoPassStatus `json:"status,omitempty"`
 	ToolPath                  string                `json:"toolPath,omitempty"`
+	PairsDetected             int                   `json:"pairsDetected,omitempty"`
+	EmbeddedSuccessfully      int                   `json:"embeddedSuccessfully,omitempty"`
 	StandaloneVideoCandidates int                   `json:"standaloneVideoCandidates,omitempty"`
+	StandaloneVideosKept      int                   `json:"standaloneVideosKept,omitempty"`
 	StandaloneVideosDeleted   int                   `json:"standaloneVideosDeleted,omitempty"`
 	StandaloneVideosSkipped   int                   `json:"standaloneVideosSkipped,omitempty"`
+	Failures                  int                   `json:"failures,omitempty"`
 	CleanupErrors             int                   `json:"cleanupErrors,omitempty"`
 	Error                     string                `json:"error,omitempty"`
 }
@@ -107,8 +111,9 @@ func RunMotionPhotoPass(targets []motionPhotoCleanupTarget, options ProcessOptio
 	options = options.Normalized()
 
 	result := MotionPhotoPassResult{
-		Enabled: options.CreateMotionPhotos,
-		Status:  MotionPhotoPassStatusSkippedDisabled,
+		Enabled:       options.CreateMotionPhotos,
+		Status:        MotionPhotoPassStatusSkippedDisabled,
+		PairsDetected: len(targets),
 	}
 	if !options.CreateMotionPhotos {
 		return result
@@ -135,11 +140,14 @@ func RunMotionPhotoPass(targets []motionPhotoCleanupTarget, options ProcessOptio
 	for index := range targets {
 		if err := runMotionPhotoPair(info.Path, &targets[index]); err != nil {
 			failures = append(failures, err.Error())
+			continue
 		}
+		result.EmbeddedSuccessfully++
 	}
 
 	if len(failures) > 0 {
 		result.Status = MotionPhotoPassStatusFailed
+		result.Failures = len(failures)
 		if len(failures) == 1 {
 			result.Error = failures[0]
 		} else {

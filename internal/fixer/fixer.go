@@ -116,11 +116,12 @@ func Process(
 			return ctx.Err()
 		}
 
-		record := processPlan(outputPath, plan, options, stateStore)
+		record, suspiciousDates := processPlan(outputPath, plan, options, stateStore)
 		if err := stateStore.Put(record); err != nil {
 			Log(LoggerError, "Failed to persist state for %s: %v", plan.RelativePath, err)
 		}
 		report.Add(record)
+		report.AddSuspiciousDates(suspiciousDates)
 
 		progress.Processed++
 		progress.Current = plan.SourcePath
@@ -130,7 +131,9 @@ func Process(
 	motionPhotoCleanupTargets := BuildMotionPhotoCleanupTargets(plans, stateStore)
 	motionPhotoResult := RunMotionPhotoPass(motionPhotoCleanupTargets, options)
 	motionPhotoResult.StandaloneVideoCandidates = len(motionPhotoCleanupTargets)
-	if len(motionPhotoCleanupTargets) > 0 && ShouldCleanupEmbeddedMotionPhotoVideos(motionPhotoResult) {
+	if options.KeepLiveVideo {
+		motionPhotoResult.StandaloneVideosKept = len(motionPhotoCleanupTargets)
+	} else if len(motionPhotoCleanupTargets) > 0 && ShouldCleanupEmbeddedMotionPhotoVideos(motionPhotoResult) {
 		motionPhotoResult.StandaloneVideosDeleted,
 			motionPhotoResult.StandaloneVideosSkipped,
 			motionPhotoResult.CleanupErrors = CleanupEmbeddedMotionPhotoVideos(motionPhotoCleanupTargets)
@@ -142,7 +145,13 @@ func Process(
 		} else {
 			Log(LoggerInfo, "Motion photo pass finished with status %s", motionPhotoResult.Status)
 		}
-		if motionPhotoResult.StandaloneVideoCandidates > 0 && ShouldCleanupEmbeddedMotionPhotoVideos(motionPhotoResult) {
+		if motionPhotoResult.StandaloneVideoCandidates > 0 && options.KeepLiveVideo {
+			Log(
+				LoggerInfo,
+				"Live video cleanup skipped: %d kept",
+				motionPhotoResult.StandaloneVideosKept,
+			)
+		} else if motionPhotoResult.StandaloneVideoCandidates > 0 && ShouldCleanupEmbeddedMotionPhotoVideos(motionPhotoResult) {
 			Log(
 				LoggerInfo,
 				"Live video cleanup: %d deleted, %d skipped, %d errors",
@@ -174,7 +183,7 @@ func processPlan(
 	plan MediaPlan,
 	options ProcessOptions,
 	stateStore *StateStore,
-) ProcessRecord {
+) (ProcessRecord, []SuspiciousDateFinding) {
 	record := ProcessRecord{
 		SourcePath:         plan.SourcePath,
 		SourceRelPath:      plan.RelativePath,
@@ -192,7 +201,7 @@ func processPlan(
 	if err != nil {
 		record.Status = OperationError
 		record.Error = err.Error()
-		return record
+		return record, nil
 	}
 
 	outputName := resolveOutputName(plan, options)
@@ -203,14 +212,14 @@ func processPlan(
 		previous.OutputPath != "" && FileExists(previous.OutputPath) {
 		previous.Status = OperationSkippedResume
 		previous.UpdatedAt = time.Now().UTC()
-		return previous
+		return previous, detectSuspiciousDates(plan, previous.OutputPath)
 	}
 
 	sourceInfo, err := os.Stat(plan.SourcePath)
 	if err != nil {
 		record.Status = OperationError
 		record.Error = err.Error()
-		return record
+		return record, nil
 	}
 	record.SourceSize = sourceInfo.Size()
 
@@ -218,7 +227,7 @@ func processPlan(
 	if err != nil {
 		record.Status = OperationError
 		record.Error = err.Error()
-		return record
+		return record, nil
 	}
 	record.SourceHash = sourceHash
 
@@ -226,10 +235,12 @@ func processPlan(
 		if existingHash == sourceHash {
 			record.OutputPath = destPath
 			record.Status = OperationSkippedExisting
-			return record
+			return record, detectSuspiciousDates(plan, record.OutputPath)
 		}
 		destPath = MakeUniquePath(destPath)
 	}
+
+	suspiciousDates := detectSuspiciousDates(plan, destPath)
 
 	if options.Deduplicate {
 		if canonical, ok := stateStore.CanonicalByHash(sourceHash); ok &&
@@ -241,13 +252,13 @@ func processPlan(
 
 			if options.DryRun {
 				record.Status = OperationDryRun
-				return record
+				return record, suspiciousDates
 			}
 
 			if err := EnsureDir(filepath.Dir(destPath)); err != nil {
 				record.Status = OperationError
 				record.Error = err.Error()
-				return record
+				return record, suspiciousDates
 			}
 
 			status, err := LinkDuplicate(canonical.OutputPath, destPath, options.UseSymlinks)
@@ -256,26 +267,26 @@ func processPlan(
 				record.Status = OperationError
 				record.Error = err.Error()
 			}
-			return record
+			return record, suspiciousDates
 		}
 	}
 
 	record.OutputPath = destPath
 	if options.DryRun {
 		record.Status = OperationDryRun
-		return record
+		return record, suspiciousDates
 	}
 
 	if err := EnsureDir(filepath.Dir(destPath)); err != nil {
 		record.Status = OperationError
 		record.Error = err.Error()
-		return record
+		return record, suspiciousDates
 	}
 
 	if err := DuplicateFile(plan.SourcePath, destPath); err != nil {
 		record.Status = OperationError
 		record.Error = err.Error()
-		return record
+		return record, suspiciousDates
 	}
 
 	if options.WriteMetadata && plan.MatchStatus == MatchStatusMatched && plan.Metadata != nil {
@@ -306,7 +317,7 @@ func processPlan(
 		record.Status = OperationCopied
 	}
 
-	return record
+	return record, suspiciousDates
 }
 
 func existingFileHash(path string) (string, bool) {

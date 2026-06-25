@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 type Manifest struct {
-	path    string
-	file    *os.File
-	success map[string]ManifestEntry
+	path   string
+	file   *os.File
+	latest map[string]ManifestEntry
 }
 
 func OpenManifest(path string) (*Manifest, error) {
@@ -19,8 +20,8 @@ func OpenManifest(path string) (*Manifest, error) {
 	}
 
 	manifest := &Manifest{
-		path:    path,
-		success: make(map[string]ManifestEntry),
+		path:   path,
+		latest: make(map[string]ManifestEntry),
 	}
 
 	if existing, err := os.Open(path); err == nil {
@@ -31,11 +32,9 @@ func OpenManifest(path string) (*Manifest, error) {
 			if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 				continue
 			}
-			if entry.ZipFingerprint == "" {
-				continue
-			}
-			if entry.Status == statusSuccess {
-				manifest.success[entry.ZipFingerprint] = entry
+			entry = normalizeManifestEntry(entry)
+			if entry.ZipFingerprint != "" {
+				manifest.latest[entry.ZipFingerprint] = entry
 			}
 		}
 		if closeErr := existing.Close(); closeErr != nil {
@@ -59,8 +58,29 @@ func (m *Manifest) Path() string {
 }
 
 func (m *Manifest) AlreadySuccessful(item ZipItem) bool {
-	_, ok := m.success[item.Fingerprint]
-	return ok
+	entry, ok := m.latest[item.Fingerprint]
+	return ok && entry.Status == statusCompleted
+}
+
+func (m *Manifest) LastEntry(item ZipItem) (ManifestEntry, bool) {
+	entry, ok := m.latest[item.Fingerprint]
+	return entry, ok
+}
+
+func (m *Manifest) MarkInterrupted(items []ZipItem) error {
+	for _, item := range items {
+		entry, ok := m.LastEntry(item)
+		if !ok || !isActiveStatus(entry.Status) {
+			continue
+		}
+		entry.Status = statusInterrupted
+		entry.EndTime = nowUTC()
+		entry.Error = "previous run ended before this ZIP finished"
+		if err := m.Append(entry); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *Manifest) Append(entry ManifestEntry) error {
@@ -74,8 +94,9 @@ func (m *Manifest) Append(entry ManifestEntry) error {
 	if err := m.file.Sync(); err != nil {
 		return err
 	}
-	if entry.Status == statusSuccess && entry.ZipFingerprint != "" {
-		m.success[entry.ZipFingerprint] = entry
+	entry = normalizeManifestEntry(entry)
+	if entry.ZipFingerprint != "" {
+		m.latest[entry.ZipFingerprint] = entry
 	}
 	return nil
 }
@@ -90,16 +111,38 @@ func (m *Manifest) Close() error {
 }
 
 func manifestPath(outputDir string) string {
-	return filepath.Join(outputDir, ".gtf", "batch_manifest.jsonl")
+	return filepath.Join(outputDir, ".gtf", "batch", "manifest.jsonl")
 }
 
 func manifestEntryFor(item ZipItem, outputDir string, status string) ManifestEntry {
 	return ManifestEntry{
 		ZipName:        item.Name,
 		ZipPath:        item.Path,
+		ZipSize:        item.SizeBytes,
+		ZipModified:    item.ModTime,
 		ZipFingerprint: item.Fingerprint,
 		SourceDrive:    item.SourceDrive,
 		Status:         status,
 		OutputFolder:   outputDir,
 	}
+}
+
+func isActiveStatus(status string) bool {
+	return status == statusPending || status == statusExtracting || status == statusProcessing
+}
+
+func normalizeManifestEntry(entry ManifestEntry) ManifestEntry {
+	switch entry.Status {
+	case "success":
+		entry.Status = statusCompleted
+	case "error", "needs-review":
+		entry.Status = statusFailed
+	case "started", "planned":
+		entry.Status = statusInterrupted
+	}
+	return entry
+}
+
+func nowUTC() time.Time {
+	return time.Now().UTC()
 }

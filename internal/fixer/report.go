@@ -1,6 +1,7 @@
 package fixer
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,20 +12,21 @@ import (
 )
 
 type RunReportSummary struct {
-	TotalMedia         int `json:"totalMedia"`
-	Matched            int `json:"matched"`
-	Unmatched          int `json:"unmatched"`
-	Ambiguous          int `json:"ambiguous"`
-	MetadataWritten    int `json:"metadataWritten"`
-	MetadataVerified   int `json:"metadataVerified"`
-	DuplicatesLinked   int `json:"duplicatesLinked"`
-	DuplicatesCopied   int `json:"duplicatesCopied"`
-	Resumed            int `json:"resumed"`
-	ExistingSkipped    int `json:"existingSkipped"`
-	ConflictsFound     int `json:"conflictsFound"`
-	PartnerSidecarUsed int `json:"partnerSidecarUsed"`
+	TotalMedia            int   `json:"totalMedia"`
+	Matched               int   `json:"matched"`
+	Unmatched             int   `json:"unmatched"`
+	Ambiguous             int   `json:"ambiguous"`
+	MetadataWritten       int   `json:"metadataWritten"`
+	MetadataVerified      int   `json:"metadataVerified"`
+	DuplicatesLinked      int   `json:"duplicatesLinked"`
+	DuplicatesCopied      int   `json:"duplicatesCopied"`
+	Resumed               int   `json:"resumed"`
+	ExistingSkipped       int   `json:"existingSkipped"`
+	ConflictsFound        int   `json:"conflictsFound"`
+	PartnerSidecarUsed    int   `json:"partnerSidecarUsed"`
 	ApproxDedupBytesSaved int64 `json:"approxDedupBytesSaved"`
-	Errors             int `json:"errors"`
+	SuspiciousDates       int   `json:"suspiciousDates"`
+	Errors                int   `json:"errors"`
 }
 
 type SourceCleanupStatus string
@@ -47,16 +49,25 @@ type SourceCleanupResult struct {
 }
 
 type RunReport struct {
-	mu              sync.Mutex             `json:"-"`
-	StartedAt       time.Time              `json:"startedAt"`
-	FinishedAt      time.Time              `json:"finishedAt"`
-	SourceRoot      string                 `json:"sourceRoot"`
-	OutputRoot      string                 `json:"outputRoot"`
-	Options         ProcessOptions         `json:"options"`
-	Summary         RunReportSummary       `json:"summary"`
-	MotionPhotoPass *MotionPhotoPassResult `json:"motionPhotoPass,omitempty"`
-	SourceCleanup   *SourceCleanupResult   `json:"sourceCleanup,omitempty"`
-	Records         []ProcessRecord        `json:"records"`
+	mu              sync.Mutex              `json:"-"`
+	StartedAt       time.Time               `json:"startedAt"`
+	FinishedAt      time.Time               `json:"finishedAt"`
+	SourceRoot      string                  `json:"sourceRoot"`
+	OutputRoot      string                  `json:"outputRoot"`
+	Options         ProcessOptions          `json:"options"`
+	Summary         RunReportSummary        `json:"summary"`
+	MotionPhotoPass *MotionPhotoPassResult  `json:"motionPhotoPass,omitempty"`
+	SourceCleanup   *SourceCleanupResult    `json:"sourceCleanup,omitempty"`
+	SuspiciousDates []SuspiciousDateFinding `json:"suspiciousDates,omitempty"`
+	Records         []ProcessRecord         `json:"records"`
+}
+
+type SuspiciousDateFinding struct {
+	SourcePath        string `json:"sourcePath"`
+	OutputPath        string `json:"outputPath,omitempty"`
+	JSONTimestamp     string `json:"jsonTimestamp,omitempty"`
+	EmbeddedTimestamp string `json:"embeddedTimestamp,omitempty"`
+	Reason            string `json:"reason"`
 }
 
 func NewRunReport(sourceRoot string, outputRoot string, options ProcessOptions) *RunReport {
@@ -113,6 +124,17 @@ func (r *RunReport) Add(record ProcessRecord) {
 	if record.Error != "" && record.Status != OperationError {
 		r.Summary.Errors++
 	}
+}
+
+func (r *RunReport) AddSuspiciousDates(findings []SuspiciousDateFinding) {
+	if len(findings) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.SuspiciousDates = append(r.SuspiciousDates, findings...)
+	r.Summary.SuspiciousDates += len(findings)
 }
 
 func (r *RunReport) SetMotionPhotoPass(result MotionPhotoPassResult) {
@@ -186,8 +208,39 @@ func (r *RunReport) Write(baseDir string) error {
 	if err := os.WriteFile(latestText, []byte(textBody), 0o644); err != nil {
 		return err
 	}
+	if err := r.writeSuspiciousDatesCSV(reportDir); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func (r *RunReport) writeSuspiciousDatesCSV(reportDir string) error {
+	file, err := os.Create(filepath.Join(reportDir, "suspicious_dates.csv"))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+
+	writer := csv.NewWriter(file)
+	if err := writer.Write([]string{"source_path", "output_path", "json_timestamp", "embedded_timestamp", "reason"}); err != nil {
+		return err
+	}
+	for _, finding := range r.SuspiciousDates {
+		if err := writer.Write([]string{
+			finding.SourcePath,
+			finding.OutputPath,
+			finding.JSONTimestamp,
+			finding.EmbeddedTimestamp,
+			finding.Reason,
+		}); err != nil {
+			return err
+		}
+	}
+	writer.Flush()
+	return writer.Error()
 }
 
 func (r *RunReport) toText() string {
@@ -209,10 +262,13 @@ func (r *RunReport) toText() string {
 		if r.MotionPhotoPass.StandaloneVideoCandidates > 0 {
 			fmt.Fprintf(
 				&b,
-				"Motion photo cleanup: deleted=%d skipped=%d errors=%d candidates=%d\n",
+				"Motion photo counts: pairs=%d embedded=%d videos_kept=%d videos_deleted=%d videos_skipped=%d failures=%d candidates=%d\n",
+				r.MotionPhotoPass.PairsDetected,
+				r.MotionPhotoPass.EmbeddedSuccessfully,
+				r.MotionPhotoPass.StandaloneVideosKept,
 				r.MotionPhotoPass.StandaloneVideosDeleted,
 				r.MotionPhotoPass.StandaloneVideosSkipped,
-				r.MotionPhotoPass.CleanupErrors,
+				r.MotionPhotoPass.Failures,
 				r.MotionPhotoPass.StandaloneVideoCandidates,
 			)
 		}
@@ -240,10 +296,12 @@ func (r *RunReport) toText() string {
 	fmt.Fprintf(&b, "  Duplicate links created: %d\n", r.Summary.DuplicatesLinked)
 	fmt.Fprintf(&b, "  Duplicate copies kept: %d\n", r.Summary.DuplicatesCopied)
 	fmt.Fprintf(&b, "  Approx dedup space saved: %s\n", FormatBytes(r.Summary.ApproxDedupBytesSaved))
+	fmt.Fprintf(&b, "  Deduplication: exact SHA-256 duplicates only; near duplicates are not removed.\n")
 	fmt.Fprintf(&b, "  Resumed/skipped from state: %d\n", r.Summary.Resumed)
 	fmt.Fprintf(&b, "  Existing files skipped: %d\n", r.Summary.ExistingSkipped)
 	fmt.Fprintf(&b, "  Partner sidecar matches: %d\n", r.Summary.PartnerSidecarUsed)
 	fmt.Fprintf(&b, "  Conflicts found: %d\n", r.Summary.ConflictsFound)
+	fmt.Fprintf(&b, "  Suspicious date rows: %d\n", r.Summary.SuspiciousDates)
 	fmt.Fprintf(&b, "  Errors: %d\n", r.Summary.Errors)
 	if r.Summary.DuplicatesLinked > 0 {
 		fmt.Fprintf(&b, "  Note: hardlinks save disk space, but Explorer can still show near full size.\n")

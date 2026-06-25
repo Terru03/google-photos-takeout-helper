@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,19 +48,21 @@ func TestSelectWorkDrivePrefersSSDWithEnoughSpace(t *testing.T) {
 }
 
 func TestManifestResumeLogic(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".gtf", "batch_manifest.jsonl")
+	root := t.TempDir()
+	path := filepath.Join(root, ".gtf", "batch", "manifest.jsonl")
 	item := ZipItem{
-		Name:        "takeout-001.zip",
-		SizeBytes:   10,
-		ModTime:     time.Unix(100, 0).UTC(),
-		Fingerprint: "takeout-001.zip|10|100",
+		Name:      "takeout-001.zip",
+		Path:      filepath.Join(root, "takeout-001.zip"),
+		SizeBytes: 10,
+		ModTime:   time.Unix(100, 0).UTC(),
 	}
+	item.Fingerprint = zipFingerprint(item)
 
 	manifest, err := OpenManifest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manifest.Append(manifestEntryFor(item, t.TempDir(), statusSuccess)); err != nil {
+	if err := manifest.Append(manifestEntryFor(item, t.TempDir(), statusCompleted)); err != nil {
 		t.Fatal(err)
 	}
 	if err := manifest.Close(); err != nil {
@@ -75,6 +78,30 @@ func TestManifestResumeLogic(t *testing.T) {
 	}()
 	if !reopened.AlreadySuccessful(item) {
 		t.Fatal("expected manifest to remember successful ZIP")
+	}
+}
+
+func TestFindTakeoutZipsIgnoresIncompleteDownloads(t *testing.T) {
+	root := t.TempDir()
+	writeTestZip(t, filepath.Join(root, "takeout-001.zip"), map[string]string{
+		"Google Photos/IMG_0001.jpg": "image",
+	})
+	if err := os.WriteFile(filepath.Join(root, "takeout-002.zip.crdownload"), []byte("partial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "takeout-003.part"), []byte("partial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	zips, err := FindTakeoutZips([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(zips) != 1 {
+		t.Fatalf("expected one complete ZIP, got %d", len(zips))
+	}
+	if filepath.Base(zips[0].Path) != "takeout-001.zip" {
+		t.Fatalf("unexpected ZIP found: %s", zips[0].Path)
 	}
 }
 
@@ -211,7 +238,7 @@ func TestRunSkipsSuccessfulManifestEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manifest.Append(manifestEntryFor(item, output, statusSuccess)); err != nil {
+	if err := manifest.Append(manifestEntryFor(item, output, statusCompleted)); err != nil {
 		t.Fatal(err)
 	}
 	if err := manifest.Close(); err != nil {
@@ -243,6 +270,60 @@ func TestRunSkipsSuccessfulManifestEntry(t *testing.T) {
 	}
 	if result.Skipped != 1 {
 		t.Fatalf("expected one skipped ZIP, got %d", result.Skipped)
+	}
+}
+
+func TestPreflightWarnsOnOverlapAndExistingState(t *testing.T) {
+	root := t.TempDir()
+	zipRoot := filepath.Join(root, "zips")
+	output := filepath.Join(zipRoot, "output")
+	work := filepath.Join(root, "work")
+	if err := os.MkdirAll(zipRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestZip(t, filepath.Join(zipRoot, "archive.zip"), map[string]string{
+		"Takeout/Google Photos/Photos from 2024/IMG_0001.jpg": "image",
+	})
+	if err := os.MkdirAll(filepath.Join(output, ".gtf"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(output, ".gtf", "state.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Preflight(Options{
+		ZipRoots:          []string{zipRoot},
+		WorkDir:           work,
+		OutputDir:         output,
+		SafetyMarginBytes: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ZipCount != 1 {
+		t.Fatalf("expected one ZIP, got %d", report.ZipCount)
+	}
+	joined := strings.Join(report.Warnings, "\n")
+	if !strings.Contains(joined, "ZIP source and output overlap") {
+		t.Fatalf("expected overlap warning, got %q", joined)
+	}
+	if !strings.Contains(joined, "existing fixer state") {
+		t.Fatalf("expected state warning, got %q", joined)
+	}
+}
+
+func TestSkipWindowsSystemScanDirs(t *testing.T) {
+	if !shouldSkipScanDir("System Volume Information") {
+		t.Fatal("expected System Volume Information to be skipped")
+	}
+	if !shouldSkipScanPath(filepath.Join(`D:\`, "$RECYCLE.BIN", "S-1-5-18")) {
+		t.Fatal("expected recycle bin subtree to be skipped")
+	}
+	if shouldSkipScanDir("Takeout_Zips") {
+		t.Fatal("expected normal ZIP folder to be scanned")
 	}
 }
 

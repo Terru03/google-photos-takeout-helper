@@ -39,6 +39,7 @@ type ProcessOptions struct {
 	IgnoreAlbums             bool
 	Flatten                  bool
 	CreateMotionPhotos       bool
+	KeepLiveVideo            bool
 	DeleteSourceAfterSuccess bool
 	RestoreMOVExtension      bool
 	Deduplicate              bool

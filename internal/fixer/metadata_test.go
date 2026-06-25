@@ -216,6 +216,41 @@ func TestBuildMetadataPlanHonorsConflictPolicies(t *testing.T) {
 	}
 }
 
+func TestDetectSuspiciousDatesReportsReasons(t *testing.T) {
+	withFakeExifTool(t, map[string]string{
+		"FAKE_EXIFTOOL_JSON": `[{"DateTimeOriginal":"2024:01:01 00:00:00"}]`,
+	})
+
+	sourcePath := filepath.Join(t.TempDir(), "IMG_0001.jpg")
+	writeTestFile(t, sourcePath, "image")
+
+	meta := imageMetadata{
+		PhotoTakenTime: takeoutTimestamp{Timestamp: "946684799"},
+	}
+	findings := detectSuspiciousDates(MediaPlan{
+		SourcePath: sourcePath,
+		Metadata:   &meta,
+	}, filepath.Join(t.TempDir(), "out.jpg"))
+	if len(findings) != 1 {
+		t.Fatalf("expected one finding row, got %d", len(findings))
+	}
+	requireContains(t, findings[0].Reason, "timestamp before 2000")
+	requireContains(t, findings[0].Reason, "JSON timestamp differs from embedded timestamp by more than 24h")
+	requireContains(t, findings[0].Reason, "timezone guessed as UTC")
+
+	futureMeta := imageMetadata{
+		PhotoTakenTime: takeoutTimestamp{Timestamp: fmt.Sprintf("%d", time.Now().UTC().Add(24*time.Hour).Unix())},
+	}
+	futureFindings := detectSuspiciousDates(MediaPlan{
+		SourcePath: sourcePath,
+		Metadata:   &futureMeta,
+	}, filepath.Join(t.TempDir(), "future.jpg"))
+	if len(futureFindings) != 1 {
+		t.Fatalf("expected one future finding row, got %d", len(futureFindings))
+	}
+	requireContains(t, futureFindings[0].Reason, "timestamp in the future")
+}
+
 func strconvFromUnix(t *testing.T, ts time.Time) string {
 	t.Helper()
 	return fmt.Sprintf("%d", ts.Unix())

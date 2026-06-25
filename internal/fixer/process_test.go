@@ -104,7 +104,7 @@ func TestProcessPlanDeduplicatesAgainstExistingState(t *testing.T) {
 		t.Fatalf("Put returned error: %v", err)
 	}
 
-	record := processPlan(outputRoot, MediaPlan{
+	record, _ := processPlan(outputRoot, MediaPlan{
 		SourcePath:   sourceB,
 		RelativePath: filepath.ToSlash(filepath.Join("Album", "a.jpg")),
 		RelativeDir:  "Album",
@@ -257,7 +257,7 @@ func TestProcessDeletesStandaloneMotionPhotoVideoAfterPartialFailedEmbed(t *test
 
 	reportText := readFileString(t, filepath.Join(outputRoot, ".gtf", "reports", "latest.txt"))
 	requireContains(t, reportText, "Motion photo pass: failed")
-	requireContains(t, reportText, "Motion photo cleanup: deleted=1 skipped=0 errors=0 candidates=1")
+	requireContains(t, reportText, "Motion photo counts: pairs=1 embedded=0 videos_kept=0 videos_deleted=1 videos_skipped=0 failures=1 candidates=1")
 
 	args := readFileString(t, argsFile)
 	requireContainsArg(t, args, "--input-image", imageOutput)
@@ -311,6 +311,81 @@ func TestProcessDeletesStandaloneMotionPhotoVideoWhenImageAlreadyMotionPhoto(t *
 	args := readFileString(t, argsFile)
 	requireContainsArg(t, args, "--input-image", imageOutput)
 	requireContainsArg(t, args, "--input-video", videoOutput)
+}
+
+func TestProcessKeepsStandaloneMotionPhotoVideoWhenRequested(t *testing.T) {
+	argsFile := filepath.Join(t.TempDir(), "motionphoto.args")
+
+	sourceRoot := filepath.Join(t.TempDir(), "Google Photos")
+	yearDir := filepath.Join(sourceRoot, "Photos from 2024")
+	if err := os.MkdirAll(yearDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeTestFile(t, filepath.Join(yearDir, "PXL_0002.jpg"), "image")
+	writeTestFile(t, filepath.Join(yearDir, "PXL_0002.mp4"), "video")
+
+	outputRoot := filepath.Join(t.TempDir(), "fixed")
+	imageOutput := filepath.Join(outputRoot, "Photos from 2024", "PXL_0002.jpg")
+	videoOutput := filepath.Join(outputRoot, "Photos from 2024", "PXL_0002.mp4")
+	withFakeMotionPhotoTool(t, map[string]string{
+		"FAKE_MOTIONPHOTO_ARGS_FILE": argsFile,
+		"FAKE_MOTIONPHOTO_APPEND_TO": imageOutput,
+	})
+
+	progressCh := make(chan Progress)
+	errCh := make(chan error, 1)
+
+	SafeGo("process-motionphoto-keep-live-test", func() {
+		errCh <- Process(context.Background(), sourceRoot, outputRoot, progressCh, ProcessOptions{
+			CreateMotionPhotos: true,
+			KeepLiveVideo:      true,
+		})
+	})
+
+	for range progressCh {
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("Process returned error: %v", err)
+	}
+
+	if !FileExists(videoOutput) {
+		t.Fatal("expected standalone live video to be kept")
+	}
+	reportText := readFileString(t, filepath.Join(outputRoot, ".gtf", "reports", "latest.txt"))
+	requireContains(t, reportText, "videos_kept=1")
+	requireContains(t, reportText, "videos_deleted=0")
+}
+
+func TestProcessWritesSuspiciousDatesCSV(t *testing.T) {
+	sourceRoot := filepath.Join(t.TempDir(), "Google Photos")
+	yearDir := filepath.Join(sourceRoot, "Photos from 2024")
+	if err := os.MkdirAll(yearDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeTestFile(t, filepath.Join(yearDir, "IMG_0002.jpg"), "image")
+	writeTestFile(t, filepath.Join(yearDir, "IMG_0002.jpg.json"), `{}`)
+
+	outputRoot := filepath.Join(t.TempDir(), "fixed")
+	progressCh := make(chan Progress)
+	errCh := make(chan error, 1)
+
+	SafeGo("process-suspicious-date-test", func() {
+		errCh <- Process(context.Background(), sourceRoot, outputRoot, progressCh, ProcessOptions{})
+	})
+
+	for range progressCh {
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("Process returned error: %v", err)
+	}
+
+	csvText := readFileString(t, filepath.Join(outputRoot, ".gtf", "reports", "suspicious_dates.csv"))
+	requireContains(t, csvText, "source_path,output_path,json_timestamp,embedded_timestamp,reason")
+	requireContains(t, csvText, "missing JSON timestamp")
 }
 
 func TestProcessDeletesSourceFolderAfterCleanRun(t *testing.T) {

@@ -65,6 +65,8 @@ func Main() {
 	autoDrives := flag.Bool("auto-drives", false, "Scan Windows drives and choose safe defaults where clear")
 	askOnAmbiguous := flag.Bool("ask-on-ambiguous", false, "Ask before choosing ambiguous drives or continuing after a problem report")
 	keepTempOnError := flag.Bool("keep-temp-on-error", false, "Keep temporary extracted files when a ZIP fails or needs review")
+	keepLiveVideo := flag.Bool("keep-live-video", false, "Keep standalone live-video files after MotionPhoto2 embeds them")
+	preflightOnly := flag.Bool("preflight-only", false, "Scan batch ZIPs and print space/path warnings without extracting or processing")
 	reprocessBatch := flag.Bool("reprocess", false, "Reprocess ZIPs even if the batch manifest already marks them successful")
 	useSymlinks := flag.Bool("symlink", false, "Use symlinks inside of albums instead of duplicating images")
 	skipMetadata := flag.Bool("skip-metadata", !defaults.WriteMetadata, "Skip writing metadata to files")
@@ -80,6 +82,7 @@ func Main() {
 	conflictPolicyValue := flag.String("conflict-policy", string(defaults.ConflictPolicy), "How to handle conflicts between embedded metadata and Takeout JSON: prefer-json, prefer-embedded, merge")
 
 	flag.Parse()
+	keepLiveVideoProvided := boolFlagProvided("keep-live-video")
 
 	if *showVersion {
 		fmt.Println(version.Tag)
@@ -116,6 +119,7 @@ func Main() {
 		IgnoreAlbums:             *ignoreAlbums,
 		MonthSubfolders:          *monthSubfolders,
 		CreateMotionPhotos:       *createMotionPhotos,
+		KeepLiveVideo:            *keepLiveVideo,
 		DeleteSourceAfterSuccess: *deleteSource,
 		RestoreMOVExtension:      *restoreMOV,
 		Deduplicate:              !*noDeduplicate,
@@ -125,6 +129,9 @@ func Main() {
 	}
 
 	if *batchZips {
+		if !keepLiveVideoProvided {
+			options.KeepLiveVideo = true
+		}
 		runBatchZIPMode(batch.Options{
 			ZipRoots:        []string(zipRoots),
 			WorkDir:         *workPath,
@@ -132,6 +139,7 @@ func Main() {
 			AutoDrives:      *autoDrives,
 			AskOnAmbiguous:  *askOnAmbiguous || *autoDrives,
 			KeepTempOnError: *keepTempOnError,
+			PreflightOnly:   *preflightOnly,
 			Reprocess:       *reprocessBatch,
 			ProcessOptions:  options,
 			Prompt:          cliPrompt,
@@ -215,6 +223,10 @@ func runBatchZIPMode(options batch.Options) {
 		fmt.Printf("Error during batch ZIP processing: %v\n", err)
 		os.Exit(1)
 	}
+	if result.Preflight != nil {
+		fmt.Println(batch.FormatPreflightReport(*result.Preflight))
+		return
+	}
 
 	fmt.Printf("\nBatch done\n")
 	fmt.Printf("ZIPs found: %d\n", result.ZipCount)
@@ -226,6 +238,16 @@ func runBatchZIPMode(options batch.Options) {
 		fmt.Printf("Work: %s\n", result.WorkDir)
 	}
 	fmt.Printf("Manifest: %s\n", result.ManifestPath)
+}
+
+func boolFlagProvided(name string) bool {
+	provided := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			provided = true
+		}
+	})
+	return provided
 }
 
 func cliPrompt(question string, choices []string, allowMultiple bool) (string, error) {

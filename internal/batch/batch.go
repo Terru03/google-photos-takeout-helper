@@ -17,6 +17,18 @@ import (
 func Run(ctx context.Context, options Options) (Result, error) {
 	options = normalizeOptions(options)
 
+	if options.PreflightOnly {
+		report, err := Preflight(options)
+		result := Result{
+			ManifestPath: report.ManifestPath,
+			OutputDir:    report.OutputDir,
+			WorkDir:      report.WorkDir,
+			ZipCount:     report.ZipCount,
+			Preflight:    &report,
+		}
+		return result, err
+	}
+
 	drives, driveErr := DetectDrives()
 	if driveErr != nil {
 		fixer.Log(fixer.LoggerWarn, "Drive scan failed: %v", driveErr)
@@ -53,7 +65,7 @@ func Run(ctx context.Context, options Options) (Result, error) {
 	}
 	options.WorkDir = workDir
 
-	if err := ValidateBatchPaths(options.ZipRoots, options.WorkDir, options.OutputDir, options.ProcessOptions.DryRun); err != nil {
+	if err := ValidateBatchPaths(options.ZipRoots, options.WorkDir, options.OutputDir, false); err != nil {
 		return Result{}, err
 	}
 
@@ -73,23 +85,8 @@ func Run(ctx context.Context, options Options) (Result, error) {
 		WorkDir:      options.WorkDir,
 		ZipCount:     len(zips),
 	}
-
-	if options.ProcessOptions.DryRun {
-		for _, item := range zips {
-			if manifest.AlreadySuccessful(item) && !options.Reprocess {
-				result.Skipped++
-				continue
-			}
-			entry := manifestEntryFor(item, options.OutputDir, statusPlanned)
-			entry.StartedAt = time.Now().UTC()
-			entry.FinishedAt = entry.StartedAt
-			if err := manifest.Append(entry); err != nil {
-				return result, err
-			}
-			result.Planned++
-			fixer.Log(fixer.LoggerInfo, "Dry run planned ZIP: %s", item.Path)
-		}
-		return result, nil
+	if err := manifest.MarkInterrupted(zips); err != nil {
+		return result, err
 	}
 
 	if err := os.MkdirAll(options.OutputDir, 0o755); err != nil {
@@ -104,23 +101,46 @@ func Run(ctx context.Context, options Options) (Result, error) {
 			return result, ctx.Err()
 		}
 		if manifest.AlreadySuccessful(item) && !options.Reprocess {
-			entry := manifestEntryFor(item, options.OutputDir, statusSkippedResume)
-			entry.StartedAt = time.Now().UTC()
-			entry.FinishedAt = entry.StartedAt
-			if err := manifest.Append(entry); err != nil {
-				return result, err
-			}
 			result.Skipped++
 			fixer.Log(fixer.LoggerInfo, "Skip already processed ZIP: %s", item.Path)
 			continue
 		}
 
+		emitProgress(options, BatchProgress{
+			CurrentZip: item.Path,
+			Completed:  result.Processed + result.Skipped + result.Failed,
+			Total:      len(zips),
+			ReportPath: manifest.Path(),
+		})
+
 		if err := runOneZip(ctx, options, item, manifest); err != nil {
-			return result, err
+			result.Failed++
+			fixer.Log(fixer.LoggerError, "ZIP failed: %s: %v", item.Path, err)
+			emitProgress(options, BatchProgress{
+				CurrentZip:  item.Path,
+				Completed:   result.Processed + result.Skipped + result.Failed,
+				Total:       len(zips),
+				LatestError: err.Error(),
+				ReportPath:  manifest.Path(),
+			})
+		} else {
+			result.Processed++
 		}
-		result.Processed++
+		emitProgress(options, BatchProgress{
+			Completed:   result.Processed + result.Skipped + result.Failed,
+			Total:       len(zips),
+			ReportPath:  manifest.Path(),
+			LatestError: "",
+		})
+		if options.StopAfterCurrent != nil && options.StopAfterCurrent() {
+			result.Stopped = true
+			break
+		}
 	}
 
+	if result.Failed > 0 {
+		return result, fmt.Errorf("%d ZIP file(s) failed; rerun to retry failed or interrupted ZIPs", result.Failed)
+	}
 	return result, nil
 }
 
@@ -157,21 +177,37 @@ func runOneZip(ctx context.Context, options Options, item ZipItem, manifest *Man
 	}
 
 	startedAt := time.Now().UTC()
-	startEntry := manifestEntryFor(item, options.OutputDir, statusStarted)
-	startEntry.StartedAt = startedAt
-	startEntry.ExtractedTempPath = tempDir
+	startEntry := manifestEntryFor(item, options.OutputDir, statusPending)
+	startEntry.StartTime = startedAt
+	startEntry.ExtractedRoot = tempDir
 	if err := manifest.Append(startEntry); err != nil {
 		return err
 	}
+	emitProgress(options, BatchProgress{
+		CurrentZip: item.Path,
+		ReportPath: manifest.Path(),
+	})
 
 	fixer.Log(fixer.LoggerInfo, "Extract ZIP: %s", item.Path)
+	extractEntry := startEntry
+	extractEntry.Status = statusExtracting
+	if err := manifest.Append(extractEntry); err != nil {
+		return err
+	}
 	if err := ExtractZip(item.Path, tempDir); err != nil {
-		return finishFailedZip(manifest, startEntry, tempDir, options, statusError, "", nil, fmt.Errorf("extract ZIP: %w", err))
+		return finishFailedZip(manifest, startEntry, options, "", nil, fmt.Errorf("extract ZIP: %w", err))
 	}
 
 	googlePhotosDir, err := LocateGooglePhotosFolder(tempDir)
 	if err != nil {
-		return finishFailedZip(manifest, startEntry, tempDir, options, statusError, "", nil, err)
+		return finishFailedZip(manifest, startEntry, options, "", nil, err)
+	}
+
+	processingEntry := startEntry
+	processingEntry.Status = statusProcessing
+	processingEntry.ExtractedRoot = googlePhotosDir
+	if err := manifest.Append(processingEntry); err != nil {
+		return err
 	}
 
 	progressCh := make(chan fixer.Progress)
@@ -191,15 +227,22 @@ func runOneZip(ctx context.Context, options Options, item ZipItem, manifest *Man
 			progress.Total,
 			filepath.Base(progress.Current),
 		)
+		emitProgress(options, BatchProgress{
+			CurrentZip:    item.Path,
+			FileProcessed: progress.Processed,
+			FileTotal:     progress.Total,
+			CurrentFile:   progress.Current,
+			ReportPath:    manifest.Path(),
+		})
 	}
 	processErr := <-errCh
 
 	reportPath, report, reportErr := loadLatestReport(options.OutputDir)
 	if processErr != nil {
-		return finishFailedZip(manifest, startEntry, tempDir, options, statusError, reportPath, report, processErr)
+		return finishFailedZip(manifest, processingEntry, options, reportPath, report, processErr)
 	}
 	if reportErr != nil {
-		return finishFailedZip(manifest, startEntry, tempDir, options, statusError, reportPath, report, reportErr)
+		return finishFailedZip(manifest, processingEntry, options, reportPath, report, reportErr)
 	}
 	if reportNeedsReview(report) {
 		err := fmt.Errorf("run needs review: unmatched=%d ambiguous=%d errors=%d",
@@ -208,29 +251,24 @@ func runOneZip(ctx context.Context, options Options, item ZipItem, manifest *Man
 			report.Summary.Errors,
 		)
 		if askContinue(options, err) {
-			if !options.KeepTempOnError {
-				if cleanupErr := cleanupTempExtract(tempDir, options.WorkDir); cleanupErr != nil {
-					return finishFailedZip(manifest, startEntry, tempDir, options, statusError, reportPath, report, cleanupErr)
-				}
-			}
-			entry := startEntry
-			entry.Status = statusNeedsReview
-			entry.FinishedAt = time.Now().UTC()
+			entry := processingEntry
+			entry.Status = statusFailed
+			entry.EndTime = time.Now().UTC()
 			entry.ReportPath = reportPath
 			entry.Summary = &report.Summary
 			entry.Error = err.Error()
 			return manifest.Append(entry)
 		}
-		return finishFailedZip(manifest, startEntry, tempDir, options, statusNeedsReview, reportPath, report, err)
+		return finishFailedZip(manifest, processingEntry, options, reportPath, report, err)
 	}
 
 	if err := cleanupTempExtract(tempDir, options.WorkDir); err != nil {
-		return finishFailedZip(manifest, startEntry, tempDir, options, statusError, reportPath, report, err)
+		return finishFailedZip(manifest, processingEntry, options, reportPath, report, err)
 	}
 
-	entry := startEntry
-	entry.Status = statusSuccess
-	entry.FinishedAt = time.Now().UTC()
+	entry := processingEntry
+	entry.Status = statusCompleted
+	entry.EndTime = time.Now().UTC()
 	entry.ReportPath = reportPath
 	entry.Summary = &report.Summary
 	if err := manifest.Append(entry); err != nil {
@@ -243,15 +281,13 @@ func runOneZip(ctx context.Context, options Options, item ZipItem, manifest *Man
 func finishFailedZip(
 	manifest *Manifest,
 	entry ManifestEntry,
-	tempDir string,
 	options Options,
-	status string,
 	reportPath string,
 	report *fixer.RunReport,
 	runErr error,
 ) error {
-	entry.Status = status
-	entry.FinishedAt = time.Now().UTC()
+	entry.Status = statusFailed
+	entry.EndTime = time.Now().UTC()
 	entry.ReportPath = reportPath
 	if report != nil {
 		entry.Summary = &report.Summary
@@ -259,10 +295,8 @@ func finishFailedZip(
 	if runErr != nil {
 		entry.Error = runErr.Error()
 	}
-	if !options.KeepTempOnError {
-		if cleanupErr := cleanupTempExtract(tempDir, options.WorkDir); cleanupErr != nil {
-			entry.Error = strings.TrimSpace(entry.Error + "; cleanup temp: " + cleanupErr.Error())
-		}
+	if entry.ExtractedRoot != "" {
+		entry.Error = strings.TrimSpace(entry.Error + "; temp kept at " + entry.ExtractedRoot)
 	}
 	if err := manifest.Append(entry); err != nil {
 		return err
@@ -271,6 +305,12 @@ func finishFailedZip(
 		return nil
 	}
 	return runErr
+}
+
+func emitProgress(options Options, progress BatchProgress) {
+	if options.Progress != nil {
+		options.Progress(progress)
+	}
 }
 
 func reportNeedsReview(report *fixer.RunReport) bool {
@@ -387,9 +427,6 @@ func resolveZipRoots(options Options, drives []DriveInfo) ([]string, error) {
 func resolveWorkDir(options Options, drives []DriveInfo, zips []ZipItem) (string, error) {
 	if strings.TrimSpace(options.WorkDir) != "" {
 		return filepath.Abs(options.WorkDir)
-	}
-	if options.ProcessOptions.DryRun && !options.AutoDrives && !options.AskOnAmbiguous {
-		return "", nil
 	}
 
 	requiredBytes := maxRequiredWorkBytes(zips, options.SafetyMarginBytes)
