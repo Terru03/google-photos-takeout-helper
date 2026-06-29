@@ -1,221 +1,259 @@
 # GoogleTakeoutFixer
 
 <p align="center">
-    <img src="images/GoogleTakeoutFixer.png" alt="drawing" width="200"/>
+    <img src="images/GoogleTakeoutFixer.png" alt="GoogleTakeoutFixer logo" width="200"/>
 </p>
 
-A tool to easily clean and organize Google Photos Takeout exports.
+GoogleTakeoutFixer is a local Google Photos Takeout repair and migration tool for large photo libraries.
 
-## The Issue
-When you download your files from Google's "Google Photos" service through "Google Takeout", the exported data is **inconsistently organized and often fragmented/broken.**
-This can lead to problems:
-- Files cannot be reliably sorted or grouped by date or location
-- The export contains unnecessary files and a cluttered folder structure
-- Your takeout having a big file size due to duplicated media and unnecessary JSON files
+It helps turn a messy Google Photos Takeout export into a cleaner folder library with restored metadata, deterministic media-to-JSON matching, resumable processing, audit reports, verification, and safer workflows for very large split-ZIP exports.
 
-## Solution
-GoogleTakeoutFixer solves these issues by:
-- **Writing metadata** into photos and videos using Google Takeout JSON data.
-- **Matching media to sidecars deterministically**, including duplicate suffixes, edited variants, long-name truncation, and live/motion-photo partner files.
-- **Optionally rebuilding Windows-viewable motion photos** with MotionPhoto2 by converting eligible image/video pairs into Samsung/Google Motion Photos.
-- **Deduplicating exact duplicate media** across year and album folders by reusing the first output copy instead of storing duplicates again.
-- **Resuming safely** with a persisted state file so failed runs can continue instead of restarting from scratch.
-- **Producing audit reports** with matched, unmatched, ambiguous, duplicate, conflict, and verification results.
-- **Verifying metadata after write** when requested, so the tool can prove what actually landed in the file.
-- **Processing huge split Takeout ZIP exports one ZIP at a time** without re-zipping final output or deleting original ZIP files.
+The app is built for people who want to keep, migrate, or import their Google Photos archive without losing dates, locations, album structure, live/motion photo relationships, or the ability to check what happened to each file.
+
+## Project status
+
+This repository started as a fork of `feloex/GoogleTakeoutFixer`. It is now my maintained version with substantial additional work around safer matching, auditability, huge Takeout handling, resumable state, verification, and migration-oriented workflows.
+
+Credit remains with the original project and other Google Takeout repair tools that helped shape the direction. This version keeps its own implementation choices, state model, reporting model, and workflow documentation.
+
+## Why Google Takeout needs repair
+
+Google Photos Takeout exports are useful, but they are often difficult to use directly:
+
+- dates and locations can be split between media files and JSON sidecars;
+- media files and JSON files can have awkward or truncated names;
+- edited files, duplicate suffixes, and live-photo partner files can be hard to match safely;
+- the same media can appear in both year folders and album folders;
+- very large exports can be split across many ZIP files;
+- users need proof that files were matched, skipped, deduplicated, or failed.
+
+GoogleTakeoutFixer focuses on safe repair rather than silent guesses. Ambiguous files are reported instead of being matched blindly.
+
+## Safe workflow first
+
+Recommended workflow:
+
+1. Keep the original Google Takeout ZIP files.
+2. Run **Audit Only** first.
+3. Check the report under `OUTPUT/.gtf/reports/`.
+4. Run **Recommended Safe Mode**.
+5. Review unmatched, ambiguous, suspicious, and failed verification files.
+6. Only use `--delete-source` if the run is clean and you already have backups.
+
+Deleting source files is an advanced option. It should not be part of a normal first run.
+
+## What is safe by default
+
+- The app works locally on your machine.
+- It does not upload your photos anywhere.
+- Original ZIP files are not moved or deleted.
+- Batch ZIP mode extracts and processes one ZIP at a time.
+- Reports and resumable state are written under the output `.gtf` folder.
+- Destructive cleanup requires explicit options and a clean run.
+
+## Features
+
+| Feature | What it does | Why it matters |
+|---|---|---|
+| Metadata writing | Writes Google Takeout JSON date, GPS, and related metadata into media files. | Restores sort order and location data for local libraries. |
+| Deterministic sidecar matching | Matches media to JSON using exact names, JSON titles, duplicate suffix handling, edited variants, long-name handling, and live/motion partner logic. | Avoids the dangerous “first similar JSON wins” behaviour. |
+| Exact duplicate dedupe | Reuses the first output copy for exact duplicate media across year and album folders. | Reduces wasted storage without guessing based on names alone. |
+| Resume support | Stores append-only state under `OUTPUT/.gtf/state.jsonl`. | Interrupted runs can continue instead of starting over. |
+| Audit reports | Writes human-readable and machine-readable reports. | You can review matched, unmatched, ambiguous, duplicate, conflict, and verification results. |
+| Verification | Reads metadata back with ExifTool when requested. | Confirms what actually landed in the file. |
+| Huge ZIP batch mode | Processes split Takeout ZIP exports one at a time. | Makes multi-terabyte exports more practical and safer to resume. |
+| MotionPhoto2 support | Optionally rebuilds eligible still+video pairs into Windows-viewable Samsung/Google Motion Photos. | Helps preserve live/motion photo behaviour in local folders. |
+| Recommended Safe Mode | Applies conservative settings for a normal repair run. | Gives users a safer starting point. |
+| Dry run / Audit Only | Plans and reports without writing repaired media. | Lets users inspect problems before changing files. |
+| Suspicious date report | Lists missing, old, future, conflicting, or guessed timestamps. | Makes date problems visible instead of hiding them. |
 
 ## Preview
+
 <p align="center">
-    <img src="images/GTFWindow-v1.3.0.png" alt="GoogleTakeoutFixer Window" width="460"/>
+    <img src="images/GTFWindow-v1.3.0.png" alt="GoogleTakeoutFixer window" width="460"/>
 </p>
 
-## Tutorial
-### 1. Preparation
-To use GoogleTakeoutFixer, you must have downloaded your photos from Google Takeout and extracted them. Follow these steps:
+## Installation
 
-1. Go to [takeout.google.com](https://takeout.google.com/) and click "Deselect all".
+1. Download a bundled release of GoogleTakeoutFixer from this repository's releases.
+2. Choose the build that matches your operating system.
+3. Extract the downloaded archive.
+4. Run the executable file.
 
-    <img src="images/DeselectAllTakeout.png" alt="Google Takeout deselect button" width="400"/>
-2. Scroll down and select "Google Photos".
-
-    <img src="images/TakeoutPhotosSelect.png" alt="Google Takeout Selected" width="400"/>
-3. Scroll down to the bottom and click "Next Step".
-
-4. In the "Transfer to" section, choose how you'd like to receive your download link. I recommend choosing email. For "File size", select 50 GB for easier handling.
-
-    <img src="images/CreateExportTakeout.png" alt="Create Export options" width=300>
-5. Click "Create export" and follow the instructions.
-
-> [!NOTE]
-> - If your Google Takeout is small enough, extract all the archives and move the extracted files into a single folder. This ensures that GoogleTakeoutFixer can process all your files correctly.
-> - If your Google Takeout is many terabytes and split across many 50 GB ZIP files, use **Batch Takeout ZIP Mode** instead. It extracts and processes one ZIP at a time.
-> - Select the folder named "Google Photos" as your input folder. This folder should contain subfolders like "Photos from (year)" and folders with the names of your albums. Do not select a parent folder of "Google Photos".
-
-### 2. Installation
-1. Download a bundled release of GoogleTakeoutFixer from this repository's releases. Choose the version that matches your operating system.
-2. Extract the downloaded archive.
-3. Run the executable file.
+Bundled release builds include ExifTool. Development builds may require ExifTool to be installed separately and available on `PATH`.
 
 > [!NOTE]
 > Creating Windows Motion Photos is optional and requires [MotionPhoto2](https://github.com/PetrVys/MotionPhoto2) to be installed separately or placed beside the app binary.
 
 > [!IMPORTANT]
-> When running the executable, a window about security can pop-up if you are using Windows. **Click "more info" and "run anyway"**.
+> Windows SmartScreen may warn about unsigned community builds. Use releases from this repository, check release notes, and verify checksums if they are provided.
 
-### 3. Using GoogleTakeoutFixer
-1. Click **"Select Google Takeout folder"** and choose the folder where you extracted your Google Takeout photos. This folder is named something like "Google Photos".
-2. Let the app suggest a sibling output folder automatically, or click **"Select output folder"** and choose your own.
-3. Choose the options that you want to apply:
-    - **"Write metadata"**: Writes metadata from JSON files into the media files. May not be necessary.
-    - **"Use symlinks for albums"**: Creates file links instead of duplicating files for albums.
-    - **"Ignore album folders"**: Ignores album folders and only processes year folders.
-    - **"Create month subfolders"**: Creates month subfolders like `1 - January` through `12 - December` inside of the output folders.
-    - **"Flatten output structure"**: Puts all files directly in the output folder.
-    - **"Create Windows Motion Photos (MotionPhoto2)"**: Runs MotionPhoto2 after processing to rebuild eligible still+video pairs into Samsung/Google Motion Photos that the Windows Photos app can play.
-    - **"Delete input folder after clean run"**: Deletes the original input folder only after a fully clean run with zero unmatched, ambiguous, or error records.
-    - **"Restore .MOV file extension"**: Restores .MOV file extension in case the Major Brand EXIF field says "Apple QuickTime (.MOV/QT)" (See #2).
-4. For a safe default, click **"Recommended Safe Mode"**. For a no-write trust check, click **"Audit Only"**.
-5. Click **"Start processing"** and wait for the process to finish. The time it takes depends on the number of photos and videos you have.
+## Preparing a Google Takeout export
 
-Once the process is complete, you can find your fixed files in the output folder you selected.
+1. Go to [takeout.google.com](https://takeout.google.com/) and click **Deselect all**.
+2. Select **Google Photos**.
+3. Click **Next Step**.
+4. Choose how to receive the archive.
+5. For large libraries, select the largest archive size available to reduce the number of split files.
+6. Download all ZIP files before starting a batch run.
 
-You can open the output folder and the latest audit report directly from the GUI after the run finishes.
+For smaller exports, extract the archives and select the folder named `Google Photos` as the input folder. This folder should contain subfolders like `Photos from 2024` and album folders.
 
----
+For large split-ZIP exports, use **Huge ZIP Batch** mode instead of extracting everything at once.
 
-### CLI usage
-You can also use GoogleTakeoutFixer through the CLI. Use the following flags:
-- `--input "PATH"`: Path to Google takeout directory
-- `--output "PATH"`: Path to output directory
-- `--symlink`: Use symlinks inside of albums instead of duplicating images
-- `--skip-metadata`: Skip writing metadata to files
-- `--ignore-albums`: Ignore album folders and only process year folders
-- `--month-subfolders`: Create month subfolders like `1 - January` through `12 - December`
-- `--flatten`: Flatten the folder structure and put all files directly in the output folder
-- `--motion-photos`: Rebuild eligible image/video pairs into Samsung/Google Motion Photos with MotionPhoto2
-- `--keep-live-video`: Keep standalone live-video files after MotionPhoto2 embeds them
-- `--delete-source`: Delete the original input folder only after a fully clean run with zero unmatched, ambiguous, or error records
-- `--restore-mov`: Restore .MOV file extension in case the Major Brand EXIF field says \"Apple QuickTime (.MOV/QT)\" (See #2)
-- `--dry-run`: Plan the run and emit reports without writing files
-- `--verify`: Read metadata back with ExifTool after writing to validate the result
-- `--no-deduplicate`: Keep exact duplicate files instead of linking or reusing them
-- `--conflict-policy prefer-json|prefer-embedded|merge`: Choose how JSON and embedded metadata conflicts are resolved
-- `--version`: Show version
-- `--help`: Show help message
+## Desktop workflow
 
-Example usage:
+1. Click **Select Google Takeout folder** and choose the extracted `Google Photos` folder.
+2. Let the app suggest a sibling output folder, or choose your own output folder.
+3. Start with **Audit Only** or **Recommended Safe Mode**.
+4. Review the latest audit report after the run.
+5. Open the output folder and reports from the GUI when processing finishes.
+
+Common options:
+
+- **Write metadata**: writes metadata from JSON files into media files.
+- **Use symlinks for albums**: creates file links instead of duplicating album media.
+- **Ignore album folders**: processes only year folders.
+- **Create month subfolders**: creates month folders like `1 - January` through `12 - December`.
+- **Flatten output structure**: writes all files directly into the output folder.
+- **Create Windows Motion Photos**: runs MotionPhoto2 after processing.
+- **Restore .MOV file extension**: restores `.MOV` when metadata indicates Apple QuickTime.
+- **Delete input folder after clean run**: advanced cleanup option. Use only after a clean run and backup review.
+
+## CLI usage
+
 ```sh
 ./GoogleTakeoutFixer --input "/path/to/takeout/Google Photos/" --output "/path/to/output/folder/" --verify
 ```
 
-Batch Takeout ZIP Mode flags:
-- `--batch-zips`: Process Takeout ZIPs one at a time
-- `--zip-root "PATH"`: Search a ZIP file or folder for Takeout ZIP files; repeat for multiple drives/folders
-- `--work "PATH"`: Temporary extraction/work folder
-- `--output "PATH"`: Final unzipped output library
-- `--auto-drives`: Scan Windows drives and choose clear defaults
-- `--ask-on-ambiguous`: Ask before choosing ambiguous drives or continuing after a problem report
-- `--keep-temp-on-error`: Keep extracted temp files when a ZIP fails or needs review
-- `--keep-live-video`: Keep standalone live-video files after MotionPhoto2 embeds them. In batch mode this is on by default; pass `--keep-live-video=false` only if you want cleanup after embedding.
-- `--preflight-only`: Scan ZIPs, check space and path risks, and write a preflight report without extracting ZIPs
-- `--reprocess`: Process ZIPs even if the batch manifest already marks them successful
-- `--dry-run`: Extract one ZIP at a time and run the fixer audit without writing fixed media
-- `--verify`: Verify written metadata by reading it back with ExifTool
+Useful flags:
 
-### Huge Takeout ZIP workflow (Windows)
-For a multi-terabyte Google Photos Takeout, keep the original ZIP files on your storage drives and write the final fixed library as normal folders and files.
+- `--input "PATH"`: path to extracted Google Photos Takeout folder;
+- `--output "PATH"`: path to repaired output folder;
+- `--dry-run`: plan the run and emit reports without writing repaired media;
+- `--verify`: read metadata back with ExifTool after writing;
+- `--symlink`: use symlinks inside albums instead of duplicating media;
+- `--skip-metadata`: skip writing metadata to files;
+- `--ignore-albums`: ignore album folders and process only year folders;
+- `--month-subfolders`: create month subfolders;
+- `--flatten`: put all files directly in the output folder;
+- `--motion-photos`: rebuild eligible image/video pairs with MotionPhoto2;
+- `--keep-live-video`: keep standalone live-video files after MotionPhoto2 embeds them;
+- `--delete-source`: delete the original input folder only after a fully clean run;
+- `--restore-mov`: restore `.MOV` extension when metadata indicates Apple QuickTime;
+- `--no-deduplicate`: keep exact duplicate files instead of linking or reusing them;
+- `--conflict-policy prefer-json|prefer-embedded|merge`: choose metadata conflict behaviour;
+- `--version`: show version;
+- `--help`: show help.
 
-Example layout:
-- ZIP storage drives: `D:\Takeout_Zips`, `E:\Takeout_Zips`, `F:\Takeout_Zips`, or other external HDD folders
-- Final output drive: `B:\Google_Photos_Final` on the 8 TB `Backup B` / `B:` drive
-- Fast temp work folder: `C:\GTF_Work` if the SSD has enough free space for one ZIP extraction plus margin
+## Huge split-ZIP exports
 
-Preflight only:
+Use Huge ZIP Batch mode when your Google Takeout export is split across many ZIP files or is too large to extract all at once.
+
+You need three separate locations:
+
+- ZIP source folder or folders, such as `D:\Takeout_Zips`;
+- temporary work folder, such as `C:\GTF_Work`;
+- final output folder, such as `B:\Google_Photos_Final`.
+
+Basic preflight command:
+
 ```powershell
-.\gtf-cli.exe --batch-zips --preflight-only --zip-root "D:\Takeout_Zips" --zip-root "F:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final"
-```
-
-Dry run:
-```powershell
-.\gtf-cli.exe --batch-zips --zip-root "D:\Takeout_Zips" --zip-root "F:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final" --dry-run
-```
-
-Batch run:
-```powershell
-.\gtf-cli.exe --batch-zips --zip-root "D:\Takeout_Zips" --zip-root "F:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final" --verify
-```
-
-Resume:
-```powershell
-.\gtf-cli.exe --batch-zips --zip-root "D:\Takeout_Zips" --zip-root "F:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final" --verify
-```
-
-Keep live videos explicitly:
-```powershell
-.\gtf-cli.exe --batch-zips --zip-root "D:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final" --motion-photos --keep-live-video
+.\gtf-cli.exe --batch-zips --preflight-only --zip-root "D:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final"
 ```
 
 Batch mode safety rules:
-- Original ZIP files are never moved or deleted.
-- Final output is never zipped back up.
-- Final output and `.gtf/state.jsonl` stay in the output folder, so dedupe works across multiple ZIPs and later runs.
-- ZIP source roots, temp work folder, and final output folder must not overlap.
-- After a clean ZIP run, only that ZIP's temporary extracted folder is deleted.
-- Failed or interrupted ZIPs are retried on the next run. Completed ZIPs with the same path, size, and modified time are skipped unless `--reprocess` is set.
-- Resume uses `OUTPUT\.gtf\batch\manifest.jsonl`; ZIPs marked `completed` are skipped unless `--reprocess` is set.
+
+- original ZIP files are never moved or deleted;
+- final output is never zipped back up;
+- ZIP source roots, temp work folder, and final output folder must not overlap;
+- failed or interrupted ZIPs are retried on the next run;
+- completed ZIPs are skipped unless `--reprocess` is set.
+
+Full guide: [Huge Takeout workflow](./docs/huge-takeout-workflow.md)
+
+## Migration workflows
+
+GoogleTakeoutFixer prepares a repaired local library. It does not directly upload to other services.
+
+Useful workflows:
+
+- **Immich-ready local library**: repair dates, GPS data, duplicates, and reports before importing with Immich tools.
+- **Synology or normal folder library**: produce a cleaner folder structure for a NAS or external drive.
+- **Archive-safe workflow**: keep original ZIPs, repaired output, and `.gtf` reports together for long-term verification.
+- **Lightroom or digiKam workflow**: future XMP sidecar support could make non-destructive metadata workflows easier.
+
+Full guide: [Migration workflows](./docs/migration-workflows.md)
+
+## Reports and runtime files
 
 During each run, the tool writes resumable state and audit artifacts under `OUTPUT/.gtf/`:
-- `state.jsonl`: append-only processing state used for resumable/idempotent runs
-- `batch/manifest.jsonl`: batch ZIP status and resume manifest
-- `batch/preflight_latest.txt`: latest preflight report
-- `reports/latest.txt`: human-readable audit summary
-- `reports/latest.json`: detailed machine-readable report
-- `reports/suspicious_dates.csv`: files with missing, old, future, conflicting, or UTC-guessed timestamps
-- `logs/*.txt`: per-run logs written beside the repaired library instead of the current working directory
 
-If `--motion-photos` is enabled, the audit report records motion pairs detected, embeds completed, videos kept, videos deleted, and failures.
-
-In the desktop app, use the **Huge ZIP Batch** mode controls to add ZIP folders, pick the temp work folder, run **Preflight**, start the batch, or choose **Stop After Current ZIP**. Stop waits for the active ZIP to finish so the next run can resume from the manifest.
-
-GUI preferences are saved in your user config directory as `GoogleTakeoutFixer/config.json`.
-
-You might have to give the executable permissions to run on Linux and macOS using `chmod +x GoogleTakeoutFixer` before you can run it through the terminal.
+- `state.jsonl`: append-only processing state used for resumable and idempotent runs;
+- `batch/manifest.jsonl`: batch ZIP status and resume manifest;
+- `batch/preflight_latest.txt`: latest preflight report;
+- `reports/latest.txt`: human-readable audit summary;
+- `reports/latest.json`: detailed machine-readable report;
+- `reports/suspicious_dates.csv`: files with missing, old, future, conflicting, or guessed timestamps;
+- `logs/*.txt`: per-run logs written beside the repaired library.
 
 ## Development
-### Setup
-This project uses [Go](https://go.dev/) as the programming language and [Fyne](https://fyne.io/) as the GUI framework. To run this programm in a developement enviroment, `cd` into the `cmd` directory and run `go run .` to start the program. 
-To run the GUI, make sure you have the necessary dependencies for Fyne installed. See the [Fyne Prerequisites](https://docs.fyne.io/started/quick/#prerequisites).
 
-```
+This project uses [Go](https://go.dev/) and [Fyne](https://fyne.io/) for the desktop GUI.
+
+```sh
 # Clone this repo
 git clone https://github.com/Terru03/google-photos-takeout-helper.git
 cd google-photos-takeout-helper
 
-# run the hybrid desktop app / CLI entrypoint
+# Run the hybrid desktop app / CLI entrypoint
 go run ./cmd
 
-# build a standalone CLI binary
+# Build a standalone CLI binary
 go build ./cmd/gtf-cli
 
-# run tests
+# Run tests
 go test ./internal/fixer ./internal/cli
 
-# run lint on the core packages
+# Run lint on the core packages
 golangci-lint run ./internal/fixer/... ./internal/cli/...
+```
 
-# build Windows binaries into ./dist
+Windows build:
+
+```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
 ```
 
-### Docs
+To run the GUI locally, make sure the required Fyne dependencies are installed. See the [Fyne prerequisites](https://docs.fyne.io/started/quick/#prerequisites).
+
+## Docs
+
 - [Architecture](./docs/architecture.md)
 - [Troubleshooting](./docs/troubleshooting.md)
+- [Huge Takeout workflow](./docs/huge-takeout-workflow.md)
+- [Migration workflows](./docs/migration-workflows.md)
 - [Versioning](./docs/versioning.md)
 
-## Credits
-This project modifies metadata using the [ExifTool](https://exiftool.org/) library by **Phil Harvey**. ExifTool is licensed under the Perl Artistic license, or the GNU General Public License (see [here](https://exiftool.org/#license) for more details).
+## Roadmap
 
-Matching behavior and product direction were also informed by other Google Takeout repair tools, especially `gophix`, but this codebase maintains its own implementation and state/reporting model.
+Planned or possible improvements:
+
+- clearer Immich-ready output profile;
+- XMP sidecar mode for non-destructive metadata workflows;
+- stronger final migration proof report;
+- GUI review page for unmatched and ambiguous files;
+- signed releases or release checksums;
+- more test fixtures for unusual Google Takeout filenames, duplicates, edited files, live photos, and split ZIPs.
+
+## Credits
+
+This project modifies metadata using [ExifTool](https://exiftool.org/) by Phil Harvey. ExifTool is licensed under the Perl Artistic license or the GNU General Public License.
+
+Optional Motion Photo rebuilding uses [MotionPhoto2](https://github.com/PetrVys/MotionPhoto2) when configured by the user.
+
+This repository began as a fork of `feloex/GoogleTakeoutFixer`. Matching behaviour and product direction were also informed by other Google Takeout repair tools, especially `gophix`, while this codebase maintains its own implementation and state/reporting model.
 
 ## Disclaimer
+
 Not affiliated with Google LLC.
