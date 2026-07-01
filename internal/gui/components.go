@@ -143,65 +143,51 @@ func stageRow(active string) fyne.CanvasObject {
 	return container.NewHBox(items...)
 }
 
-type readOnlyLogEntry struct {
-	widget.Entry
-}
-
-func newReadOnlyLogEntry() *readOnlyLogEntry {
-	entry := &readOnlyLogEntry{}
-	entry.ExtendBaseWidget(entry)
-	entry.MultiLine = true
-	entry.Wrapping = fyne.TextWrapOff
-	entry.Scroll = fyne.ScrollBoth
-	entry.TextStyle = fyne.TextStyle{Monospace: true}
-	entry.SetMinRowsVisible(12)
-	return entry
-}
-
-func (e *readOnlyLogEntry) TypedRune(_ rune) {
-}
-
-func (e *readOnlyLogEntry) TypedKey(event *fyne.KeyEvent) {
-	switch event.Name {
-	case fyne.KeyBackspace, fyne.KeyDelete, fyne.KeyReturn, fyne.KeyEnter, fyne.KeyTab:
-		return
-	default:
-		e.Entry.TypedKey(event)
-	}
-}
-
-func (e *readOnlyLogEntry) TypedShortcut(shortcut fyne.Shortcut) {
-	switch shortcut.(type) {
-	case *fyne.ShortcutPaste, *fyne.ShortcutCut:
-		return
-	default:
-		e.Entry.TypedShortcut(shortcut)
-	}
-}
-
 func (s *guiState) logBox() fyne.CanvasObject {
-	entry := s.ensureLogEntry()
-	return coloredPanel(color.NRGBA{R: 0x17, G: 0x18, B: 0x16, A: 0xff}, colBorder, fieldRadius, entry)
+	scroll := s.ensureLogView()
+	return coloredPanel(color.NRGBA{R: 0x17, G: 0x18, B: 0x16, A: 0xff}, colBorder, fieldRadius, scroll)
 }
 
-func (s *guiState) ensureLogEntry() *readOnlyLogEntry {
-	if s.logEntry == nil {
-		s.logEntry = newReadOnlyLogEntry()
+func (s *guiState) ensureLogView() *container.Scroll {
+	if s.logLabel == nil {
+		label := widget.NewLabel("")
+		label.Wrapping = fyne.TextWrapOff
+		label.TextStyle = fyne.TextStyle{Monospace: true}
+		s.logLabel = label
+	}
+	if s.logScroll == nil {
+		scroll := container.NewScroll(s.logLabel)
+		scroll.SetMinSize(fyne.NewSize(0, 190))
+		scroll.OnScrolled = func(position fyne.Position) {
+			s.logAutoScroll = logScrollAtBottom(position, scroll.Size(), scroll.Content.MinSize())
+		}
+		s.logScroll = scroll
+		if !s.logAutoScroll {
+			s.logAutoScroll = true
+		}
 	}
 	s.updateLogView()
-	return s.logEntry
+	return s.logScroll
 }
 
 func (s *guiState) updateLogView() {
-	if s.logEntry == nil {
+	if s.logLabel == nil {
 		return
 	}
 	body := logTextForDisplay(s.logLines)
-	if s.logEntry.Text == body {
+	if s.logLabel.Text == body {
 		return
 	}
-	s.logEntry.SetText(body)
-	moveEntryCursorToEnd(&s.logEntry.Entry)
+	shouldFollow := s.logAutoScroll
+	if s.logScroll != nil {
+		shouldFollow = shouldFollow || logScrollAtBottom(s.logScroll.Offset, s.logScroll.Size(), s.logScroll.Content.MinSize())
+	}
+	s.logLabel.SetText(body)
+	s.logLabel.Refresh()
+	if shouldFollow && s.logScroll != nil && s.logScroll.Size().Height > 0 {
+		s.logScroll.ScrollToBottom()
+		s.logAutoScroll = true
+	}
 }
 
 func (s *guiState) copyLogToClipboard() {
@@ -218,11 +204,11 @@ func logTextForDisplay(lines []string) string {
 	return strings.Join(lines, "\n")
 }
 
-func moveEntryCursorToEnd(entry *widget.Entry) {
-	lines := strings.Split(entry.Text, "\n")
-	entry.CursorRow = len(lines) - 1
-	entry.CursorColumn = len([]rune(lines[len(lines)-1]))
-	entry.Refresh()
+func logScrollAtBottom(offset fyne.Position, viewport fyne.Size, content fyne.Size) bool {
+	if viewport.Height <= 0 || content.Height <= viewport.Height {
+		return true
+	}
+	return offset.Y+viewport.Height >= content.Height-8
 }
 
 func emptyCard(title string, body string) fyne.CanvasObject {

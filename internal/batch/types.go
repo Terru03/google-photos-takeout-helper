@@ -115,6 +115,7 @@ type Result struct {
 
 type BatchProgress struct {
 	CurrentZip    string
+	CurrentIndex  int
 	Phase         string
 	Completed     int
 	Total         int

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -91,6 +92,51 @@ func TestManifestResumeLogic(t *testing.T) {
 	}
 }
 
+func TestPreflightValidatesMotionPhotoDependency(t *testing.T) {
+	root := t.TempDir()
+	zipRoot := filepath.Join(root, "zips")
+	work := filepath.Join(root, "work")
+	output := filepath.Join(root, "output")
+	if err := os.MkdirAll(zipRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestZip(t, filepath.Join(zipRoot, "takeout-001.zip"), map[string]string{
+		"Takeout/Google Photos/Photos from 2024/IMG_0001.jpg": "image",
+	})
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWD)
+	})
+	t.Setenv("PATH", "")
+
+	_, err = Preflight(Options{
+		ZipRoots:          []string{zipRoot},
+		WorkDir:           work,
+		OutputDir:         output,
+		SafetyMarginBytes: 1,
+		ProcessOptions: fixer.ProcessOptions{
+			CreateMotionPhotos: true,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected missing MotionPhoto2 to fail preflight")
+	}
+	if !strings.Contains(err.Error(), "MotionPhoto2") {
+		t.Fatalf("expected MotionPhoto2 error, got %v", err)
+	}
+	assertNoTempDirs(t, work)
+}
+
 func TestFindTakeoutZipsIgnoresIncompleteDownloads(t *testing.T) {
 	root := t.TempDir()
 	writeTestZip(t, filepath.Join(root, "takeout-001.zip"), map[string]string{
@@ -163,6 +209,75 @@ func TestExtractZipSanitizesWindowsUnsafePathComponents(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected sanitized file %s: %v", path, err)
 		}
+	}
+}
+
+func TestRunReportsStableCurrentZipIndexAfterFailures(t *testing.T) {
+	root := t.TempDir()
+	zipRoot := filepath.Join(root, "zips")
+	work := filepath.Join(root, "work")
+	output := filepath.Join(root, "output")
+	if err := os.MkdirAll(zipRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"takeout-001.zip", "takeout-002.zip", "takeout-003.zip"} {
+		writeTestZip(t, filepath.Join(zipRoot, name), map[string]string{
+			"Takeout/Google Photos/Photos from 2024/IMG_0001.jpg": "image",
+		})
+	}
+
+	var progressEvents []BatchProgress
+	called := 0
+	_, err := Run(context.Background(), Options{
+		ZipRoots:          []string{zipRoot},
+		WorkDir:           work,
+		OutputDir:         output,
+		SafetyMarginBytes: 1,
+		ProcessOptions: fixer.ProcessOptions{
+			WriteMetadata:       false,
+			VerifyWrites:        false,
+			RestoreMOVExtension: false,
+		},
+		Process: func(_ context.Context, _ string, outputPath string, progressCh chan<- fixer.Progress, _ fixer.ProcessOptions) error {
+			defer close(progressCh)
+			called++
+			if called <= 2 {
+				return fmt.Errorf("forced fail %d", called)
+			}
+			writeCleanReport(t, outputPath)
+			return nil
+		},
+		Progress: func(progress BatchProgress) {
+			if progress.CurrentZip != "" {
+				progressEvents = append(progressEvents, progress)
+			}
+		},
+	})
+	if err == nil {
+		t.Fatal("expected batch error after forced failures")
+	}
+	if !strings.Contains(err.Error(), "2 ZIP file(s) failed") {
+		t.Fatalf("unexpected batch error: %v", err)
+	}
+
+	seenThird := false
+	for _, event := range progressEvents {
+		if filepath.Base(event.CurrentZip) != "takeout-003.zip" {
+			continue
+		}
+		seenThird = true
+		if event.CurrentIndex != 3 {
+			t.Fatalf("third ZIP index = %d, want 3 in event %+v", event.CurrentIndex, event)
+		}
+		if event.Total != 3 {
+			t.Fatalf("third ZIP total = %d, want 3 in event %+v", event.Total, event)
+		}
+	}
+	if !seenThird {
+		t.Fatalf("did not see progress for third ZIP in %+v", progressEvents)
 	}
 }
 

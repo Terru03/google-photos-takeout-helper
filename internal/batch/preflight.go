@@ -12,6 +12,9 @@ import (
 
 func Preflight(options Options) (PreflightReport, error) {
 	options = normalizeOptions(options)
+	if err := validateProcessingDependencies(options); err != nil {
+		return PreflightReport{}, err
+	}
 
 	drives, driveErr := DetectDrives()
 	if driveErr != nil {

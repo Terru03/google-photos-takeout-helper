@@ -86,6 +86,9 @@ func DetectMotionPhotoTool() (*MotionPhotoToolInfo, error) {
 	candidate := getMotionPhotoToolPath()
 	if filepath.IsAbs(candidate) {
 		if _, err := os.Stat(candidate); err == nil {
+			if err := validateMotionPhotoTool(candidate); err != nil {
+				return nil, err
+			}
 			return &MotionPhotoToolInfo{Path: candidate}, nil
 		}
 	}
@@ -94,8 +97,23 @@ func DetectMotionPhotoTool() (*MotionPhotoToolInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("MotionPhoto2 is required to create Windows-viewable motion photos. Place motionphoto2 next to the app binary or add it to PATH: %w", err)
 	}
+	if err := validateMotionPhotoTool(path); err != nil {
+		return nil, err
+	}
 
 	return &MotionPhotoToolInfo{Path: path}, nil
+}
+
+func validateMotionPhotoTool(path string) error {
+	output, err := newHiddenCommand(path, "--help").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("MotionPhoto2 was found at %s but could not run --help: %w: %s", path, err, strings.TrimSpace(string(output)))
+	}
+	help := strings.ToLower(string(output))
+	if !strings.Contains(help, "input-image") || !strings.Contains(help, "input-video") {
+		return fmt.Errorf("MotionPhoto2 was found at %s but does not report the expected single-file flags", path)
+	}
+	return nil
 }
 
 func ValidateMotionPhotoDependencies(options ProcessOptions) (*MotionPhotoToolInfo, error) {

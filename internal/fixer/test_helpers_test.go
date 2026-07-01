@@ -124,6 +124,10 @@ func withFakeMotionPhotoTool(t *testing.T, extraEnv map[string]string) string {
 		body = `@echo off
 setlocal EnableDelayedExpansion
 set "ARGS=%*"
+if "%~1"=="--help" (
+  echo MotionPhoto2 --input-image --input-video --overwrite
+  exit /b 0
+)
 if defined FAKE_MOTIONPHOTO_ARGS_FILE (
   >> "%FAKE_MOTIONPHOTO_ARGS_FILE%" echo !ARGS!
 )
@@ -139,6 +143,10 @@ exit /b %FAKE_MOTIONPHOTO_EXIT_CODE%
 		path = filepath.Join(dir, "fake-motionphoto2")
 		body = `#!/usr/bin/env sh
 args="$*"
+if [ "$1" = "--help" ]; then
+  printf '%s\n' "MotionPhoto2 --input-image --input-video --overwrite"
+  exit 0
+fi
 if [ -n "${FAKE_MOTIONPHOTO_ARGS_FILE}" ]; then
   printf '%s\n' "$args" >> "${FAKE_MOTIONPHOTO_ARGS_FILE}"
 fi

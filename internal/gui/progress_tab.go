@@ -104,7 +104,10 @@ func (s *guiState) buildPreflightScreen() fyne.CanvasObject {
 func (s *guiState) buildProcessingScreen() fyne.CanvasObject {
 	header := "Processing"
 	if s.mode == modeBatch && s.batchTotal > 0 {
-		index := s.batchCompleted + 1
+		index := s.batchIndex
+		if index <= 0 {
+			index = s.batchCompleted + 1
+		}
 		if index > s.batchTotal {
 			index = s.batchTotal
 		}

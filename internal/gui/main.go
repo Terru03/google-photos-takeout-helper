@@ -14,6 +14,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
 	"github.com/Terru03/google-photos-takeout-helper/internal/batch"
 	"github.com/Terru03/google-photos-takeout-helper/internal/fixer"
 	version "github.com/Terru03/google-photos-takeout-helper/internal/version"
@@ -57,6 +58,7 @@ type guiState struct {
 	runReport      *fixer.RunReport
 
 	currentZip     string
+	batchIndex     int
 	batchCompleted int
 	batchTotal     int
 	fileProcessed  int
@@ -64,7 +66,9 @@ type guiState struct {
 	currentFile    string
 	stage          string
 	logLines       []string
-	logEntry       *readOnlyLogEntry
+	logLabel       *widget.Label
+	logScroll      *container.Scroll
+	logAutoScroll  bool
 	progressScroll *container.Scroll
 	cancel         context.CancelFunc
 	stopAfterZip   atomic.Bool
@@ -107,6 +111,7 @@ func Main() {
 		keepTempOnErr: true,
 		progressPhase: progressEmpty,
 		stage:         "Extract",
+		logAutoScroll: true,
 	}
 
 	fixer.SetLogHandler(func(level fixer.LogLevel, message string) {
@@ -479,6 +484,7 @@ func (s *guiState) startBatchProcessing() {
 	s.progressPhase = progressProcessing
 	s.latestError = ""
 	s.batchCompleted = 0
+	s.batchIndex = 0
 	s.batchTotal = 0
 	s.fileProcessed = 0
 	s.fileTotal = 0
@@ -505,19 +511,31 @@ func (s *guiState) startBatchProcessing() {
 			StopAfterCurrent: func() bool { return s.stopAfterZip.Load() },
 			Progress: func(progress batch.BatchProgress) {
 				fyne.Do(func() {
-					s.currentZip = progress.CurrentZip
+					if progress.CurrentZip != "" && !strings.EqualFold(filepath.Clean(progress.CurrentZip), filepath.Clean(s.currentZip)) {
+						s.fileProcessed = 0
+						s.fileTotal = 0
+						s.currentFile = ""
+					}
+					if progress.CurrentZip != "" {
+						s.currentZip = progress.CurrentZip
+					}
+					if progress.CurrentIndex > 0 {
+						s.batchIndex = progress.CurrentIndex
+					}
 					if progress.Total > 0 {
 						s.batchTotal = progress.Total
 						s.batchCompleted = progress.Completed
 					}
+					if progress.Phase == "extract" {
+						s.stage = "Extract"
+					} else if progress.Phase == "process" {
+						s.stage = "Metadata"
+					}
 					if progress.FileTotal > 0 {
 						s.fileProcessed = progress.FileProcessed
 						s.fileTotal = progress.FileTotal
-						s.currentFile = progress.CurrentFile
-						if progress.Phase == "extract" {
-							s.stage = "Extract"
-						} else if progress.Phase == "process" {
-							s.stage = "Metadata"
+						if strings.TrimSpace(progress.CurrentFile) != "" {
+							s.currentFile = progress.CurrentFile
 						}
 					}
 					if progress.LatestError != "" {

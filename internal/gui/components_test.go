@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/test"
 )
 
 func TestLogTextForDisplayKeepsManyLines(t *testing.T) {
@@ -25,17 +24,17 @@ func TestLogTextForDisplayKeepsManyLines(t *testing.T) {
 	}
 }
 
-func TestReadOnlyLogEntryBlocksEditingKeys(t *testing.T) {
-	app := test.NewApp()
-	defer app.Quit()
+func TestLogScrollAtBottom(t *testing.T) {
+	viewport := fyne.NewSize(400, 100)
+	content := fyne.NewSize(800, 500)
 
-	entry := newReadOnlyLogEntry()
-	entry.SetText("line one")
-	entry.TypedRune('x')
-	entry.TypedKey(&fyne.KeyEvent{Name: fyne.KeyBackspace})
-	entry.TypedShortcut(&fyne.ShortcutPaste{Clipboard: app.Clipboard()})
-
-	if entry.Text != "line one" {
-		t.Fatalf("expected read-only log entry text to stay unchanged, got %q", entry.Text)
+	if logScrollAtBottom(fyne.NewPos(0, 50), viewport, content) {
+		t.Fatal("expected log to pause following when user scrolled up")
+	}
+	if !logScrollAtBottom(fyne.NewPos(0, 400), viewport, content) {
+		t.Fatal("expected log to follow when user is at bottom")
+	}
+	if !logScrollAtBottom(fyne.NewPos(0, 0), viewport, fyne.NewSize(400, 80)) {
+		t.Fatal("expected short log content to count as bottom")
 	}
 }
