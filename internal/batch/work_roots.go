@@ -20,13 +20,11 @@ type workRootStatus struct {
 }
 
 func resolveWorkDirs(options Options, drives []DriveInfo, zips []ZipItem) ([]string, error) {
-	explicit := make([]string, 0, len(options.WorkDirs)+1)
-	explicit = append(explicit, options.WorkDirs...)
-	if strings.TrimSpace(options.WorkDir) != "" {
-		explicit = append(explicit, options.WorkDir)
+	if len(nonEmptyStrings(options.WorkDirs)) > 0 {
+		return absPaths(options.WorkDirs)
 	}
-	if len(nonEmptyStrings(explicit)) > 0 {
-		return absPaths(explicit)
+	if strings.TrimSpace(options.WorkDir) != "" {
+		return absPaths([]string{options.WorkDir})
 	}
 
 	requiredBytes := maxRequiredWorkBytes(zips, options.SafetyMarginBytes)

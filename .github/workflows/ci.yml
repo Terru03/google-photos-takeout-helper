@@ -21,10 +21,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          args: ./internal/fixer/... ./internal/cli/...
+      - name: Run vet
+        run: go vet ./...
 
   test:
     runs-on: ${{ matrix.os }}
@@ -38,7 +36,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Run tests
-        run: go test ./internal/fixer ./internal/cli
+        run: go test ./...
 
   build:
     runs-on: ubuntu-latest
@@ -49,7 +47,5 @@ jobs:
           go-version-file: go.mod
       - name: Install GUI build dependencies
         run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev
-      - name: Build CLI
-        run: go build ./cmd/gtf-cli
-      - name: Build GUI
-        run: CGO_ENABLED=1 go build ./cmd
+      - name: Build single app binary
+        run: CGO_ENABLED=1 go build -o /tmp/GoogleTakeoutFixer ./cmd

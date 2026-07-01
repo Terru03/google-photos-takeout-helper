@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -341,6 +342,30 @@ func TestRunNeverDeletesZipFile(t *testing.T) {
 	}
 }
 
+func TestResolveWorkDirsDoesNotDuplicateLegacyWorkDir(t *testing.T) {
+	root := t.TempDir()
+	workA := filepath.Join(root, "work-a")
+	workB := filepath.Join(root, "work-b")
+
+	got, err := resolveWorkDirs(Options{
+		WorkDir:  workA,
+		WorkDirs: []string{workA, workB},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{workA, workB}
+	for i := range want {
+		want[i], err = filepath.Abs(want[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v want %#v", got, want)
+	}
+}
+
 func TestRunCompletesWithReviewCleansTempAndSkipsRerun(t *testing.T) {
 	root := t.TempDir()
 	zipRoot := filepath.Join(root, "zips")
@@ -631,7 +656,7 @@ func writeReport(t *testing.T, outputPath string, summary fixer.RunReportSummary
 		OutputRoot: outputPath,
 		Summary:    summary,
 	}
-	data, err := json.Marshal(report)
+	data, err := json.Marshal(&report)
 	if err != nil {
 		t.Fatal(err)
 	}
