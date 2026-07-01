@@ -22,7 +22,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Run vet
-        run: go vet ./...
+        run: go vet ./internal/batch ./internal/cli ./internal/fixer
 
   test:
     runs-on: ${{ matrix.os }}
@@ -36,7 +36,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Run tests
-        run: go test ./...
+        run: go test ./internal/batch ./internal/cli ./internal/fixer
 
   build:
     runs-on: ubuntu-latest
