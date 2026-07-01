@@ -1,5 +1,5 @@
 /*
-GoogleTakeoutFixer - A tool to easily clean and organize Google Photos Takeout exports
+Google Photos Takeout Helper - A tool to clean and organize Google Photos Takeout exports
 Copyright (C) 2026 feloex
 
 This program is free software: you can redistribute it and/or modify
@@ -28,9 +28,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/feloex/GoogleTakeoutFixer/internal/batch"
-	"github.com/feloex/GoogleTakeoutFixer/internal/fixer"
-	version "github.com/feloex/GoogleTakeoutFixer/internal/version"
+	"github.com/Terru03/google-photos-takeout-helper/internal/batch"
+	"github.com/Terru03/google-photos-takeout-helper/internal/fixer"
+	version "github.com/Terru03/google-photos-takeout-helper/internal/version"
 )
 
 type stringListFlag []string
@@ -61,15 +61,20 @@ func Main() {
 	batchZips := flag.Bool("batch-zips", false, "Process huge Google Takeout ZIP exports one ZIP at a time")
 	var zipRoots stringListFlag
 	flag.Var(&zipRoots, "zip-root", "Path to a Takeout ZIP file or folder containing Takeout ZIP files; may be repeated")
-	workPath := flag.String("work", "", "Temporary work folder used for extracting one ZIP at a time")
+	var workPaths stringListFlag
+	flag.Var(&workPaths, "work", "Temporary work folder used for extracting one ZIP at a time; may be repeated")
+	workPool := flag.String("work-pool", "", "Semicolon-separated temporary work folders used when repeated --work flags are not convenient")
 	autoDrives := flag.Bool("auto-drives", false, "Scan Windows drives and choose safe defaults where clear")
 	askOnAmbiguous := flag.Bool("ask-on-ambiguous", false, "Ask before choosing ambiguous drives or continuing after a problem report")
 	keepTempOnError := flag.Bool("keep-temp-on-error", false, "Keep temporary extracted files when a ZIP fails or needs review")
 	keepLiveVideo := flag.Bool("keep-live-video", false, "Keep standalone live-video files after MotionPhoto2 embeds them")
 	preflightOnly := flag.Bool("preflight-only", false, "Scan batch ZIPs and print space/path warnings without extracting or processing")
 	reprocessBatch := flag.Bool("reprocess", false, "Reprocess ZIPs even if the batch manifest already marks them successful")
+	profileValue := flag.String("profile", "", "Output profile: recommended-safe, audit-only, immich")
+	albumModeValue := flag.String("album-mode", "", "Album output mode: unique-only, timeline-only, all")
 	useSymlinks := flag.Bool("symlink", false, "Use symlinks inside of albums instead of duplicating images")
 	skipMetadata := flag.Bool("skip-metadata", !defaults.WriteMetadata, "Skip writing metadata to files")
+	metadataModeValue := flag.String("metadata-mode", "", "Metadata output mode: file, xmp, both, none")
 	ignoreAlbums := flag.Bool("ignore-albums", false, "Ignore all album folders")
 	monthSubfolders := flag.Bool("month-subfolders", false, "Create month subfolders like \"1 - January\" inside year folders")
 	flatten := flag.Bool("flatten", false, "Put all media files directly in the output folder without year/album subfolders")
@@ -115,6 +120,8 @@ func Main() {
 	options := fixer.ProcessOptions{
 		UseSymlinks:              *useSymlinks,
 		WriteMetadata:            !*skipMetadata,
+		WriteXMPSidecars:         false,
+		AlbumMode:                defaults.AlbumMode,
 		Flatten:                  *flatten,
 		IgnoreAlbums:             *ignoreAlbums,
 		MonthSubfolders:          *monthSubfolders,
@@ -127,14 +134,49 @@ func Main() {
 		VerifyWrites:             *verifyWrites,
 		ConflictPolicy:           conflictPolicy,
 	}
+	if strings.TrimSpace(*profileValue) != "" {
+		if err := applyOutputProfile(*profileValue, &options); err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	if strings.TrimSpace(*albumModeValue) != "" {
+		mode, err := fixer.ParseAlbumMode(strings.ToLower(strings.TrimSpace(*albumModeValue)))
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		options.AlbumMode = mode
+	} else if *ignoreAlbums {
+		options.AlbumMode = fixer.AlbumModeTimelineOnly
+	}
+	if strings.TrimSpace(*metadataModeValue) != "" {
+		mode, err := fixer.ParseMetadataOutputMode(strings.ToLower(strings.TrimSpace(*metadataModeValue)))
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		options.WriteMetadata = mode.WritesFiles()
+		options.WriteXMPSidecars = mode.WritesXMPSidecars()
+		if !options.WriteMetadata {
+			options.VerifyWrites = false
+		}
+	}
+	options = options.Normalized()
+	if options.Flatten && options.AlbumMode != fixer.AlbumModeAll {
+		fmt.Println("Error: --flatten can only be used with --album-mode all")
+		os.Exit(1)
+	}
 
 	if *batchZips {
+		workDirs := ParseWorkRoots([]string(workPaths), *workPool)
 		if !keepLiveVideoProvided {
 			options.KeepLiveVideo = true
 		}
 		runBatchZIPMode(batch.Options{
 			ZipRoots:        []string(zipRoots),
-			WorkDir:         *workPath,
+			WorkDir:         firstCLIWorkRoot(workDirs),
+			WorkDirs:        workDirs,
 			OutputDir:       *outputPath,
 			AutoDrives:      *autoDrives,
 			AskOnAmbiguous:  *askOnAmbiguous || *autoDrives,
@@ -197,6 +239,32 @@ func Main() {
 	fmt.Println("\nDone")
 }
 
+func ParseWorkRoots(workFlags []string, workPool string) []string {
+	roots := make([]string, 0, len(workFlags))
+	for _, value := range workFlags {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			roots = append(roots, value)
+		}
+	}
+	for _, value := range strings.Split(workPool, ";") {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			roots = append(roots, value)
+		}
+	}
+	return roots
+}
+
+func firstCLIWorkRoot(workDirs []string) string {
+	for _, workDir := range workDirs {
+		if strings.TrimSpace(workDir) != "" {
+			return workDir
+		}
+	}
+	return ""
+}
+
 func runBatchZIPMode(options batch.Options) {
 	if options.ProcessOptions.DeleteSourceAfterSuccess {
 		fmt.Println("Batch ZIP mode ignores --delete-source because ZIP sources must never be deleted")
@@ -220,6 +288,7 @@ func runBatchZIPMode(options batch.Options) {
 
 	result, err := batch.Run(context.Background(), options)
 	if err != nil {
+		printAlbumCleanupSummary(result)
 		fmt.Printf("Error during batch ZIP processing: %v\n", err)
 		os.Exit(1)
 	}
@@ -230,14 +299,37 @@ func runBatchZIPMode(options batch.Options) {
 
 	fmt.Printf("\nBatch done\n")
 	fmt.Printf("ZIPs found: %d\n", result.ZipCount)
-	fmt.Printf("Processed: %d\n", result.Processed)
+	fmt.Printf("Processed: %d\n", result.Processed+result.CompletedWithReview)
+	fmt.Printf("Completed clean: %d\n", result.Processed)
+	fmt.Printf("Completed with review: %d\n", result.CompletedWithReview)
 	fmt.Printf("Skipped: %d\n", result.Skipped)
+	fmt.Printf("Failed: %d\n", result.Failed)
 	fmt.Printf("Planned: %d\n", result.Planned)
 	fmt.Printf("Output: %s\n", result.OutputDir)
-	if result.WorkDir != "" {
+	if len(result.WorkDirs) > 0 {
+		fmt.Printf("Work roots:\n")
+		for _, workDir := range result.WorkDirs {
+			fmt.Printf("  - %s\n", workDir)
+		}
+	} else if result.WorkDir != "" {
 		fmt.Printf("Work: %s\n", result.WorkDir)
 	}
+	printAlbumCleanupSummary(result)
 	fmt.Printf("Manifest: %s\n", result.ManifestPath)
+}
+
+func printAlbumCleanupSummary(result batch.Result) {
+	if result.AlbumCleanup == nil || !result.AlbumCleanup.Enabled {
+		return
+	}
+	fmt.Printf("Album cleanup: %s, removed %d duplicate album file(s), removed %d empty folder(s)\n",
+		result.AlbumCleanup.Status,
+		result.AlbumCleanup.DuplicateFilesRemoved,
+		result.AlbumCleanup.EmptyDirsRemoved,
+	)
+	if result.AlbumCleanup.ReportPath != "" {
+		fmt.Printf("Album cleanup report: %s\n", result.AlbumCleanup.ReportPath)
+	}
 }
 
 func boolFlagProvided(name string) bool {
@@ -248,6 +340,44 @@ func boolFlagProvided(name string) bool {
 		}
 	})
 	return provided
+}
+
+func applyOutputProfile(name string, options *fixer.ProcessOptions) error {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "recommended-safe", "safe", "recommended":
+		options.WriteMetadata = true
+		options.WriteXMPSidecars = false
+		options.VerifyWrites = true
+		options.RestoreMOVExtension = true
+		options.Deduplicate = true
+		options.DryRun = false
+		options.DeleteSourceAfterSuccess = false
+		options.ConflictPolicy = fixer.ConflictMerge
+		options.AlbumMode = fixer.AlbumModeUniqueOnly
+	case "audit-only", "audit", "dry-run":
+		options.WriteMetadata = false
+		options.WriteXMPSidecars = false
+		options.VerifyWrites = false
+		options.RestoreMOVExtension = false
+		options.Deduplicate = true
+		options.DryRun = true
+		options.DeleteSourceAfterSuccess = false
+		options.AlbumMode = fixer.AlbumModeUniqueOnly
+	case "immich", "immich-ready":
+		options.WriteMetadata = true
+		options.WriteXMPSidecars = true
+		options.VerifyWrites = true
+		options.RestoreMOVExtension = true
+		options.Deduplicate = true
+		options.KeepLiveVideo = true
+		options.DryRun = false
+		options.DeleteSourceAfterSuccess = false
+		options.ConflictPolicy = fixer.ConflictMerge
+		options.AlbumMode = fixer.AlbumModeUniqueOnly
+	default:
+		return fmt.Errorf("unknown profile %q", name)
+	}
+	return nil
 }
 
 func cliPrompt(question string, choices []string, allowMultiple bool) (string, error) {

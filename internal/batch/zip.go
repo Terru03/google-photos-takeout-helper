@@ -8,9 +8,18 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
-	"github.com/feloex/GoogleTakeoutFixer/internal/fixer"
+	"github.com/Terru03/google-photos-takeout-helper/internal/fixer"
 )
+
+type ExtractProgress struct {
+	ProcessedFiles int
+	TotalFiles     int
+	CurrentFile    string
+	CurrentBytes   int64
+	TotalBytes     int64
+}
 
 func FindTakeoutZips(roots []string) ([]ZipItem, error) {
 	var items []ZipItem
@@ -26,7 +35,7 @@ func FindTakeoutZips(roots []string) ([]ZipItem, error) {
 		}
 
 		if !info.IsDir() {
-			if LooksLikeTakeoutZip(root) {
+			if looksLikeCompleteZip(root) {
 				item, err := newZipItem(root, info)
 				if err != nil {
 					return nil, err
@@ -62,7 +71,8 @@ func FindTakeoutZips(roots []string) ([]ZipItem, error) {
 			}
 			item, err := newZipItem(path, info)
 			if err != nil {
-				return err
+				fixer.Log(fixer.LoggerWarn, "Skip unreadable ZIP %s: %v", path, err)
+				return nil
 			}
 			items = append(items, item)
 			return nil
@@ -79,6 +89,11 @@ func FindTakeoutZips(roots []string) ([]ZipItem, error) {
 }
 
 func LooksLikeTakeoutZip(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	return looksLikeCompleteZip(path) && strings.Contains(base, takeoutZipNameNeedle)
+}
+
+func looksLikeCompleteZip(path string) bool {
 	base := strings.ToLower(filepath.Base(path))
 	if hasIncompleteDownloadSuffix(base) {
 		return false
@@ -163,6 +178,10 @@ func zipStats(path string) (int64, int, error) {
 }
 
 func ExtractZip(zipPath string, destDir string) error {
+	return ExtractZipWithProgress(zipPath, destDir, nil)
+}
+
+func ExtractZipWithProgress(zipPath string, destDir string, onProgress func(ExtractProgress)) error {
 	reader, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return err
@@ -179,6 +198,8 @@ func ExtractZip(zipPath string, destDir string) error {
 		return err
 	}
 
+	totalFiles := countExtractableZipEntries(reader.File)
+	processedFiles := 0
 	for _, file := range reader.File {
 		name, err := safeZipEntryName(file.Name)
 		if err != nil {
@@ -192,6 +213,12 @@ func ExtractZip(zipPath string, destDir string) error {
 		if !pathWithin(destAbs, target) {
 			return fmt.Errorf("unsafe ZIP entry path %q", file.Name)
 		}
+		reportExtractProgress(onProgress, ExtractProgress{
+			ProcessedFiles: processedFiles,
+			TotalFiles:     totalFiles,
+			CurrentFile:    name,
+			TotalBytes:     int64(file.UncompressedSize64),
+		})
 
 		mode := file.FileInfo().Mode()
 		if mode&os.ModeSymlink != 0 {
@@ -217,7 +244,20 @@ func ExtractZip(zipPath string, destDir string) error {
 			_ = source.Close()
 			return err
 		}
-		_, copyErr := io.Copy(dest, source)
+		progressSource := &extractProgressReader{
+			reader: source,
+			total:  int64(file.UncompressedSize64),
+			report: func(bytesCopied int64) {
+				reportExtractProgress(onProgress, ExtractProgress{
+					ProcessedFiles: processedFiles,
+					TotalFiles:     totalFiles,
+					CurrentFile:    name,
+					CurrentBytes:   bytesCopied,
+					TotalBytes:     int64(file.UncompressedSize64),
+				})
+			},
+		}
+		_, copyErr := io.Copy(dest, progressSource)
 		closeSourceErr := source.Close()
 		closeDestErr := dest.Close()
 		if copyErr != nil {
@@ -229,8 +269,62 @@ func ExtractZip(zipPath string, destDir string) error {
 		if closeDestErr != nil {
 			return closeDestErr
 		}
+		processedFiles++
+		reportExtractProgress(onProgress, ExtractProgress{
+			ProcessedFiles: processedFiles,
+			TotalFiles:     totalFiles,
+			CurrentFile:    name,
+			CurrentBytes:   int64(file.UncompressedSize64),
+			TotalBytes:     int64(file.UncompressedSize64),
+		})
 	}
 	return nil
+}
+
+type extractProgressReader struct {
+	reader     io.Reader
+	total      int64
+	copied     int64
+	lastReport time.Time
+	report     func(int64)
+}
+
+func (r *extractProgressReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		r.copied += int64(n)
+		if time.Since(r.lastReport) >= 2*time.Second || r.copied == r.total {
+			r.lastReport = time.Now()
+			r.report(r.copied)
+		}
+	}
+	if err == io.EOF {
+		r.report(r.copied)
+	}
+	return n, err
+}
+
+func countExtractableZipEntries(files []*zip.File) int {
+	count := 0
+	for _, file := range files {
+		if file.FileInfo().Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		if file.FileInfo().IsDir() {
+			continue
+		}
+		if strings.TrimSpace(file.Name) == "" {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func reportExtractProgress(onProgress func(ExtractProgress), progress ExtractProgress) {
+	if onProgress != nil {
+		onProgress(progress)
+	}
 }
 
 func LocateGooglePhotosFolder(root string) (string, error) {
@@ -329,19 +423,101 @@ func sourceDrive(path string) string {
 }
 
 func safeZipEntryName(name string) (string, error) {
-	name = strings.TrimSpace(strings.ReplaceAll(name, "\\", "/"))
-	if name == "" {
+	zipName := strings.ReplaceAll(name, "\\", "/")
+	if strings.TrimSpace(zipName) == "" {
 		return "", nil
 	}
-	clean := filepath.Clean(filepath.FromSlash(name))
-	if clean == "." {
+	if strings.HasPrefix(zipName, "/") || strings.HasPrefix(zipName, "//") {
+		return "", fmt.Errorf("unsafe ZIP entry path %q", name)
+	}
+
+	rawParts := strings.Split(zipName, "/")
+	parts := make([]string, 0, len(rawParts))
+	for index, rawPart := range rawParts {
+		if rawPart == "" {
+			continue
+		}
+		if index == 0 && looksLikeWindowsDrivePart(rawPart) {
+			return "", fmt.Errorf("unsafe ZIP entry path %q", name)
+		}
+		if isTraversalPart(rawPart) {
+			return "", fmt.Errorf("unsafe ZIP entry path %q", name)
+		}
+
+		part := sanitizeWindowsPathPart(rawPart)
+		if part == "" {
+			part = "_"
+		}
+		parts = append(parts, part)
+	}
+
+	if len(parts) == 0 {
 		return "", nil
 	}
-	if filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" || clean == ".." ||
+
+	clean := filepath.Join(parts...)
+	if filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" || clean == "." || clean == ".." ||
 		strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("unsafe ZIP entry path %q", name)
 	}
 	return clean, nil
+}
+
+func looksLikeWindowsDrivePart(part string) bool {
+	return len(part) >= 2 && part[1] == ':' &&
+		((part[0] >= 'A' && part[0] <= 'Z') || (part[0] >= 'a' && part[0] <= 'z'))
+}
+
+func isTraversalPart(part string) bool {
+	trimmed := strings.TrimSpace(part)
+	return trimmed == "." || trimmed == ".."
+}
+
+func sanitizeWindowsPathPart(part string) string {
+	part = strings.TrimRight(part, " .")
+	var b strings.Builder
+	for _, r := range part {
+		if isWindowsInvalidPathRune(r) {
+			b.WriteRune('_')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	safe := b.String()
+	if isReservedWindowsDeviceName(safe) {
+		return "_" + safe
+	}
+	return safe
+}
+
+func isWindowsInvalidPathRune(r rune) bool {
+	if r >= 0 && r < 32 {
+		return true
+	}
+	switch r {
+	case '<', '>', ':', '"', '|', '?', '*':
+		return true
+	default:
+		return false
+	}
+}
+
+func isReservedWindowsDeviceName(part string) bool {
+	base := part
+	if dot := strings.IndexByte(base, '.'); dot >= 0 {
+		base = base[:dot]
+	}
+	base = strings.ToUpper(base)
+	switch base {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	if len(base) == 4 {
+		prefix := base[:3]
+		suffix := base[3]
+		return (prefix == "COM" || prefix == "LPT") && suffix >= '1' && suffix <= '9'
+	}
+	return false
 }
 
 func isDir(path string) bool {

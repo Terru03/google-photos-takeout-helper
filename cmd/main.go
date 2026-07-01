@@ -1,5 +1,5 @@
 /*
-GoogleTakeoutFixer - A tool to easily clean and organize Google Photos Takeout exports
+Google Photos Takeout Helper - A tool to clean and organize Google Photos Takeout exports
 Copyright (C) 2026 feloex
 
 This program is free software: you can redistribute it and/or modify
@@ -21,8 +21,8 @@ package main
 import (
 	"os"
 
-	"github.com/feloex/GoogleTakeoutFixer/internal/cli"
-	"github.com/feloex/GoogleTakeoutFixer/internal/gui"
+	"github.com/Terru03/google-photos-takeout-helper/internal/cli"
+	"github.com/Terru03/google-photos-takeout-helper/internal/gui"
 )
 
 func main() {

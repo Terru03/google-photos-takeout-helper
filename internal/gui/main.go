@@ -13,9 +13,10 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
-	"github.com/feloex/GoogleTakeoutFixer/internal/batch"
-	"github.com/feloex/GoogleTakeoutFixer/internal/fixer"
-	version "github.com/feloex/GoogleTakeoutFixer/internal/version"
+	"fyne.io/fyne/v2/container"
+	"github.com/Terru03/google-photos-takeout-helper/internal/batch"
+	"github.com/Terru03/google-photos-takeout-helper/internal/fixer"
+	version "github.com/Terru03/google-photos-takeout-helper/internal/version"
 	"github.com/ncruces/zenity"
 )
 
@@ -28,6 +29,8 @@ const (
 	progressProcessing = "processing"
 	progressDone       = "done"
 	progressError      = "error"
+
+	maxUILogLines = 5000
 )
 
 type guiState struct {
@@ -38,6 +41,8 @@ type guiState struct {
 	inputPath     string
 	outputPath    string
 	workPath      string
+	workPaths     []string
+	selectedWork  string
 	zipRoots      []string
 	selectedRoot  string
 	options       fixer.ProcessOptions
@@ -59,6 +64,8 @@ type guiState struct {
 	currentFile    string
 	stage          string
 	logLines       []string
+	logEntry       *readOnlyLogEntry
+	progressScroll *container.Scroll
 	cancel         context.CancelFunc
 	stopAfterZip   atomic.Bool
 	selectedTab    int
@@ -72,11 +79,14 @@ func Main() {
 	if prefs.Options != (fixer.ProcessOptions{}) {
 		defaults = prefs.Options
 	}
+	defaults = defaults.Normalized()
 	if defaults.ConflictPolicy == "" {
 		defaults.ConflictPolicy = fixer.ConflictMerge
 	}
 	if prefs.Options == (fixer.ProcessOptions{}) {
 		defaults.KeepLiveVideo = true
+		defaults.AlbumMode = fixer.AlbumModeUniqueOnly
+		defaults.IgnoreAlbums = false
 	}
 	defaults.DeleteSourceAfterSuccess = false
 
@@ -140,7 +150,7 @@ func (s *guiState) currentOptions() fixer.ProcessOptions {
 	if opts.ConflictPolicy == "" {
 		opts.ConflictPolicy = fixer.ConflictMerge
 	}
-	return opts
+	return opts.Normalized()
 }
 
 func (s *guiState) savePreferences() {
@@ -159,10 +169,10 @@ func (s *guiState) appendLog(line string) {
 	}
 	fyne.Do(func() {
 		s.logLines = append(s.logLines, line)
-		if len(s.logLines) > 300 {
-			s.logLines = s.logLines[len(s.logLines)-300:]
+		if len(s.logLines) > maxUILogLines {
+			s.logLines = s.logLines[len(s.logLines)-maxUILogLines:]
 		}
-		s.refreshTabs(s.selectedTab)
+		s.updateLogView()
 	})
 }
 
@@ -248,9 +258,84 @@ func (s *guiState) selectWorkFolder() {
 	if err != nil {
 		return
 	}
-	s.workPath = dir
+	s.addWorkRoot(dir)
+}
+
+func (s *guiState) addWorkRoot(root string) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return
+	}
+	for _, existing := range s.workPaths {
+		if strings.EqualFold(filepath.Clean(existing), filepath.Clean(root)) {
+			s.selectedWork = existing
+			return
+		}
+	}
+	s.workPaths = append(s.workPaths, root)
+	s.selectedWork = root
+	s.workPath = s.primaryWorkPath()
 	s.mode = modeBatch
 	s.refreshTabs(0)
+}
+
+func (s *guiState) removeSelectedWorkRoot() {
+	if s.selectedWork == "" {
+		return
+	}
+	filtered := s.workPaths[:0]
+	for _, root := range s.workPaths {
+		if !strings.EqualFold(filepath.Clean(root), filepath.Clean(s.selectedWork)) {
+			filtered = append(filtered, root)
+		}
+	}
+	s.workPaths = filtered
+	s.selectedWork = ""
+	s.workPath = s.primaryWorkPath()
+	s.refreshTabs(0)
+}
+
+func (s *guiState) moveSelectedWorkRoot(delta int) {
+	if s.selectedWork == "" || delta == 0 {
+		return
+	}
+	index := -1
+	for i, root := range s.workPaths {
+		if strings.EqualFold(filepath.Clean(root), filepath.Clean(s.selectedWork)) {
+			index = i
+			break
+		}
+	}
+	next := index + delta
+	if index < 0 || next < 0 || next >= len(s.workPaths) {
+		return
+	}
+	s.workPaths[index], s.workPaths[next] = s.workPaths[next], s.workPaths[index]
+	s.workPath = s.primaryWorkPath()
+	s.refreshTabs(0)
+}
+
+func (s *guiState) normalizedWorkPaths() []string {
+	paths := make([]string, 0, len(s.workPaths)+1)
+	for _, path := range s.workPaths {
+		path = strings.TrimSpace(path)
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	if len(paths) == 0 && strings.TrimSpace(s.workPath) != "" {
+		paths = append(paths, strings.TrimSpace(s.workPath))
+	}
+	return paths
+}
+
+func (s *guiState) primaryWorkPath() string {
+	for _, path := range s.normalizedWorkPaths() {
+		if strings.TrimSpace(path) != "" {
+			return path
+		}
+	}
+	return ""
 }
 
 func (s *guiState) runPreflight() {
@@ -268,9 +353,10 @@ func (s *guiState) runPreflight() {
 		}
 		report, err := batch.Preflight(batch.Options{
 			ZipRoots:          s.zipRoots,
-			WorkDir:           s.workPath,
+			WorkDir:           s.primaryWorkPath(),
+			WorkDirs:          s.normalizedWorkPaths(),
 			OutputDir:         s.outputPath,
-			AutoDrives:        s.outputPath == "" || s.workPath == "",
+			AutoDrives:        s.outputPath == "" || len(s.normalizedWorkPaths()) == 0,
 			KeepTempOnError:   s.keepTempOnErr,
 			SafetyMarginBytes: 0,
 			ProcessOptions:    s.currentOptions(),
@@ -285,6 +371,10 @@ func (s *guiState) runPreflight() {
 		}
 		if report.WorkDir != "" {
 			s.workPath = report.WorkDir
+		}
+		if len(report.WorkDirs) > 0 {
+			s.workPaths = append([]string(nil), report.WorkDirs...)
+			s.workPath = s.primaryWorkPath()
 		}
 		s.refreshTabs(1)
 		return
@@ -405,9 +495,10 @@ func (s *guiState) startBatchProcessing() {
 	fixer.SafeGo("gui-batch-process", func() {
 		result, err := batch.Run(ctx, batch.Options{
 			ZipRoots:         s.zipRoots,
-			WorkDir:          s.workPath,
+			WorkDir:          s.primaryWorkPath(),
+			WorkDirs:         s.normalizedWorkPaths(),
 			OutputDir:        s.outputPath,
-			AutoDrives:       s.outputPath == "" || s.workPath == "",
+			AutoDrives:       s.outputPath == "" || len(s.normalizedWorkPaths()) == 0,
 			KeepTempOnError:  s.keepTempOnErr,
 			Reprocess:        s.reprocess,
 			ProcessOptions:   options,
@@ -423,7 +514,11 @@ func (s *guiState) startBatchProcessing() {
 						s.fileProcessed = progress.FileProcessed
 						s.fileTotal = progress.FileTotal
 						s.currentFile = progress.CurrentFile
-						s.stage = "Metadata"
+						if progress.Phase == "extract" {
+							s.stage = "Extract"
+						} else if progress.Phase == "process" {
+							s.stage = "Metadata"
+						}
 					}
 					if progress.LatestError != "" {
 						s.latestError = progress.LatestError
@@ -440,6 +535,10 @@ func (s *guiState) startBatchProcessing() {
 			}
 			if result.WorkDir != "" {
 				s.workPath = result.WorkDir
+			}
+			if len(result.WorkDirs) > 0 {
+				s.workPaths = append([]string(nil), result.WorkDirs...)
+				s.workPath = s.primaryWorkPath()
 			}
 			if err != nil && ctx.Err() == nil {
 				s.setErrorNoRefresh(err.Error())

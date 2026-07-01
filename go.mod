@@ -1,4 +1,4 @@
-module github.com/feloex/GoogleTakeoutFixer
+module github.com/Terru03/google-photos-takeout-helper
 
 go 1.25.5
 

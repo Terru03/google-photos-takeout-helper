@@ -12,21 +12,28 @@ import (
 )
 
 type RunReportSummary struct {
-	TotalMedia            int   `json:"totalMedia"`
-	Matched               int   `json:"matched"`
-	Unmatched             int   `json:"unmatched"`
-	Ambiguous             int   `json:"ambiguous"`
-	MetadataWritten       int   `json:"metadataWritten"`
-	MetadataVerified      int   `json:"metadataVerified"`
-	DuplicatesLinked      int   `json:"duplicatesLinked"`
-	DuplicatesCopied      int   `json:"duplicatesCopied"`
-	Resumed               int   `json:"resumed"`
-	ExistingSkipped       int   `json:"existingSkipped"`
-	ConflictsFound        int   `json:"conflictsFound"`
-	PartnerSidecarUsed    int   `json:"partnerSidecarUsed"`
-	ApproxDedupBytesSaved int64 `json:"approxDedupBytesSaved"`
-	SuspiciousDates       int   `json:"suspiciousDates"`
-	Errors                int   `json:"errors"`
+	TotalMedia                   int   `json:"totalMedia"`
+	JSONSidecarsFound            int   `json:"jsonSidecarsFound"`
+	Matched                      int   `json:"matched"`
+	MatchedCleanly               int   `json:"matchedCleanly"`
+	MatchedWithFallback          int   `json:"matchedWithFallback"`
+	Unmatched                    int   `json:"unmatched"`
+	Ambiguous                    int   `json:"ambiguous"`
+	OutputMedia                  int   `json:"outputMedia"`
+	MetadataWritten              int   `json:"metadataWritten"`
+	XMPSidecarsWritten           int   `json:"xmpSidecarsWritten"`
+	MetadataVerified             int   `json:"metadataVerified"`
+	MetadataVerificationFailures int   `json:"metadataVerificationFailures"`
+	DuplicatesLinked             int   `json:"duplicatesLinked"`
+	DuplicatesCopied             int   `json:"duplicatesCopied"`
+	DuplicatesReused             int   `json:"duplicatesReused"`
+	Resumed                      int   `json:"resumed"`
+	ExistingSkipped              int   `json:"existingSkipped"`
+	ConflictsFound               int   `json:"conflictsFound"`
+	PartnerSidecarUsed           int   `json:"partnerSidecarUsed"`
+	ApproxDedupBytesSaved        int64 `json:"approxDedupBytesSaved"`
+	SuspiciousDates              int   `json:"suspiciousDates"`
+	Errors                       int   `json:"errors"`
 }
 
 type SourceCleanupStatus string
@@ -54,6 +61,8 @@ type RunReport struct {
 	FinishedAt      time.Time               `json:"finishedAt"`
 	SourceRoot      string                  `json:"sourceRoot"`
 	OutputRoot      string                  `json:"outputRoot"`
+	ReportDir       string                  `json:"reportDir,omitempty"`
+	LogDir          string                  `json:"logDir,omitempty"`
 	Options         ProcessOptions          `json:"options"`
 	Summary         RunReportSummary        `json:"summary"`
 	MotionPhotoPass *MotionPhotoPassResult  `json:"motionPhotoPass,omitempty"`
@@ -88,6 +97,11 @@ func (r *RunReport) Add(record ProcessRecord) {
 	switch record.MatchStatus {
 	case MatchStatusMatched:
 		r.Summary.Matched++
+		if isFallbackMatch(record.MatchStrategy) {
+			r.Summary.MatchedWithFallback++
+		} else {
+			r.Summary.MatchedCleanly++
+		}
 	case MatchStatusUnmatched:
 		r.Summary.Unmatched++
 	case MatchStatusAmbiguous:
@@ -97,8 +111,14 @@ func (r *RunReport) Add(record ProcessRecord) {
 	if record.MetadataWritten {
 		r.Summary.MetadataWritten++
 	}
+	if record.MetadataWritten && record.UsedXMPSidecar {
+		r.Summary.XMPSidecarsWritten++
+	}
 	if record.MetadataVerified {
 		r.Summary.MetadataVerified++
+	}
+	if strings.Contains(record.Error, "verification failed") {
+		r.Summary.MetadataVerificationFailures++
 	}
 	if len(record.Conflicts) > 0 {
 		r.Summary.ConflictsFound += len(record.Conflicts)
@@ -113,17 +133,29 @@ func (r *RunReport) Add(record ProcessRecord) {
 	case OperationSkippedExisting:
 		r.Summary.ExistingSkipped++
 	case OperationHardlinked, OperationSymlinked:
+		r.Summary.DuplicatesReused++
 		r.Summary.DuplicatesLinked++
 		r.Summary.ApproxDedupBytesSaved += record.SourceSize
 	case OperationDuplicateCopied:
+		r.Summary.DuplicatesReused++
 		r.Summary.DuplicatesCopied++
 	case OperationError:
 		r.Summary.Errors++
+	}
+	if record.OutputPath != "" && record.Successful() && record.Status != OperationDryRun {
+		r.Summary.OutputMedia++
 	}
 
 	if record.Error != "" && record.Status != OperationError {
 		r.Summary.Errors++
 	}
+}
+
+func (r *RunReport) SetJSONSidecarsFound(count int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.Summary.JSONSidecarsFound = count
 }
 
 func (r *RunReport) AddSuspiciousDates(findings []SuspiciousDateFinding) {
@@ -183,6 +215,8 @@ func (r *RunReport) Write(baseDir string) error {
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
 		return err
 	}
+	r.ReportDir = reportDir
+	r.LogDir = filepath.Join(baseDir, "logs")
 
 	stamp := r.FinishedAt.Format("2006-01-02_15-04-05")
 	jsonPath := filepath.Join(reportDir, stamp+".json")
@@ -209,6 +243,9 @@ func (r *RunReport) Write(baseDir string) error {
 		return err
 	}
 	if err := r.writeSuspiciousDatesCSV(reportDir); err != nil {
+		return err
+	}
+	if err := r.writeReviewCSV(reportDir); err != nil {
 		return err
 	}
 
@@ -243,13 +280,61 @@ func (r *RunReport) writeSuspiciousDatesCSV(reportDir string) error {
 	return writer.Error()
 }
 
+func (r *RunReport) writeReviewCSV(reportDir string) error {
+	file, err := os.Create(filepath.Join(reportDir, "review.csv"))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+
+	writer := csv.NewWriter(file)
+	if err := writer.Write([]string{
+		"source_rel_path",
+		"match_status",
+		"match_strategy",
+		"status",
+		"output_path",
+		"sidecar_path",
+		"partner_rel_path",
+		"match_candidates",
+		"conflicts",
+		"error",
+	}); err != nil {
+		return err
+	}
+	for _, record := range r.Records {
+		if !needsReview(record) {
+			continue
+		}
+		if err := writer.Write([]string{
+			record.SourceRelPath,
+			string(record.MatchStatus),
+			string(record.MatchStrategy),
+			string(record.Status),
+			record.OutputPath,
+			record.SidecarPath,
+			record.PartnerRelPath,
+			strings.Join(record.MatchCandidates, "|"),
+			strings.Join(conflictFields(record.Conflicts), "|"),
+			record.Error,
+		}); err != nil {
+			return err
+		}
+	}
+	writer.Flush()
+	return writer.Error()
+}
+
 func (r *RunReport) toText() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "GoogleTakeoutFixer Audit Report\n")
+	fmt.Fprintf(&b, "Google Photos Takeout Helper Audit Report\n")
 	fmt.Fprintf(&b, "Started: %s\n", r.StartedAt.Format(time.RFC3339))
 	fmt.Fprintf(&b, "Finished: %s\n", r.FinishedAt.Format(time.RFC3339))
 	fmt.Fprintf(&b, "Source: %s\n", r.SourceRoot)
 	fmt.Fprintf(&b, "Output: %s\n", r.OutputRoot)
+	fmt.Fprintf(&b, "Metadata output: %s\n", MetadataOutputModeForOptions(r.Options))
 	if r.MotionPhotoPass != nil && r.MotionPhotoPass.Enabled {
 		fmt.Fprintf(&b, "Motion photo pass: %s", r.MotionPhotoPass.Status)
 		if r.MotionPhotoPass.ToolPath != "" {
@@ -287,12 +372,19 @@ func (r *RunReport) toText() string {
 		fmt.Fprintln(&b)
 	}
 	fmt.Fprintf(&b, "\nSummary\n")
-	fmt.Fprintf(&b, "  Total media: %d\n", r.Summary.TotalMedia)
-	fmt.Fprintf(&b, "  Matched: %d\n", r.Summary.Matched)
+	fmt.Fprintf(&b, "  Input media found: %d\n", r.Summary.TotalMedia)
+	fmt.Fprintf(&b, "  JSON sidecars found: %d\n", r.Summary.JSONSidecarsFound)
+	fmt.Fprintf(&b, "  Matched cleanly: %d\n", r.Summary.MatchedCleanly)
+	fmt.Fprintf(&b, "  Matched with fallback: %d\n", r.Summary.MatchedWithFallback)
+	fmt.Fprintf(&b, "  Matched total: %d\n", r.Summary.Matched)
 	fmt.Fprintf(&b, "  Unmatched: %d\n", r.Summary.Unmatched)
 	fmt.Fprintf(&b, "  Ambiguous: %d\n", r.Summary.Ambiguous)
+	fmt.Fprintf(&b, "  Output media count: %d\n", r.Summary.OutputMedia)
 	fmt.Fprintf(&b, "  Metadata written: %d\n", r.Summary.MetadataWritten)
+	fmt.Fprintf(&b, "  XMP sidecars written: %d\n", r.Summary.XMPSidecarsWritten)
 	fmt.Fprintf(&b, "  Metadata verified: %d\n", r.Summary.MetadataVerified)
+	fmt.Fprintf(&b, "  Verification failures: %d\n", r.Summary.MetadataVerificationFailures)
+	fmt.Fprintf(&b, "  Duplicates reused: %d\n", r.Summary.DuplicatesReused)
 	fmt.Fprintf(&b, "  Duplicate links created: %d\n", r.Summary.DuplicatesLinked)
 	fmt.Fprintf(&b, "  Duplicate copies kept: %d\n", r.Summary.DuplicatesCopied)
 	fmt.Fprintf(&b, "  Approx dedup space saved: %s\n", FormatBytes(r.Summary.ApproxDedupBytesSaved))
@@ -303,6 +395,13 @@ func (r *RunReport) toText() string {
 	fmt.Fprintf(&b, "  Conflicts found: %d\n", r.Summary.ConflictsFound)
 	fmt.Fprintf(&b, "  Suspicious date rows: %d\n", r.Summary.SuspiciousDates)
 	fmt.Fprintf(&b, "  Errors: %d\n", r.Summary.Errors)
+	if r.MotionPhotoPass != nil {
+		fmt.Fprintf(&b, "  Motion photos detected: %d\n", r.MotionPhotoPass.PairsDetected)
+		fmt.Fprintf(&b, "  Motion photos rebuilt: %d\n", r.MotionPhotoPass.EmbeddedSuccessfully)
+	} else {
+		fmt.Fprintf(&b, "  Motion photos detected: 0\n")
+		fmt.Fprintf(&b, "  Motion photos rebuilt: 0\n")
+	}
 	if r.Summary.DuplicatesLinked > 0 {
 		fmt.Fprintf(&b, "  Note: hardlinks save disk space, but Explorer can still show near full size.\n")
 	}
@@ -334,5 +433,39 @@ func (r *RunReport) toText() string {
 		fmt.Fprintf(&b, "  None\n")
 	}
 
+	fmt.Fprintf(&b, "\nArtifacts\n")
+	if r.ReportDir != "" {
+		fmt.Fprintf(&b, "  Reports: %s\n", r.ReportDir)
+		fmt.Fprintf(&b, "  Latest text: %s\n", filepath.Join(r.ReportDir, "latest.txt"))
+		fmt.Fprintf(&b, "  Latest JSON: %s\n", filepath.Join(r.ReportDir, "latest.json"))
+		fmt.Fprintf(&b, "  Review CSV: %s\n", filepath.Join(r.ReportDir, "review.csv"))
+	}
+	if r.LogDir != "" {
+		fmt.Fprintf(&b, "  Logs: %s\n", r.LogDir)
+	}
+
 	return b.String()
+}
+
+func isFallbackMatch(strategy MatchStrategy) bool {
+	switch strategy {
+	case MatchStrategyExactName, MatchStrategyJSONTitle:
+		return false
+	default:
+		return true
+	}
+}
+
+func needsReview(record ProcessRecord) bool {
+	return record.MatchStatus != MatchStatusMatched ||
+		record.Error != "" ||
+		len(record.Conflicts) > 0
+}
+
+func conflictFields(conflicts []MetadataFieldConflict) []string {
+	fields := make([]string, 0, len(conflicts))
+	for _, conflict := range conflicts {
+		fields = append(fields, conflict.Field)
+	}
+	return fields
 }

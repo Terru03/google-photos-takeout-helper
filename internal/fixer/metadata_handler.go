@@ -1,7 +1,9 @@
 package fixer
 
 import (
+	"bytes"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -304,6 +306,67 @@ func ApplyMetadata(filePath string, meta imageMetadata, policy ConflictPolicy) (
 	result.MetadataWritten = true
 	result.MetadataPlan = plan.expectation()
 	return result, nil
+}
+
+func WriteMetadataXMPSidecar(filePath string, meta imageMetadata, policy ConflictPolicy) (MetadataApplyResult, error) {
+	plan, err := buildMetadataPlan(meta, policy, filePath)
+	if err != nil {
+		return MetadataApplyResult{}, err
+	}
+
+	result := MetadataApplyResult{
+		Conflicts:      plan.Conflicts,
+		UsedXMPSidecar: true,
+	}
+	if !plan.WriteTimestamp && !plan.WriteGPS && !plan.WriteTitle && !plan.WriteDescription {
+		return result, nil
+	}
+
+	sidecarPath := filePath + ".xmp"
+	if err := os.WriteFile(sidecarPath, []byte(renderXMPPacket(plan)), 0o644); err != nil {
+		return result, err
+	}
+
+	result.MetadataWritten = true
+	result.MetadataPlan = plan.expectation()
+	return result, nil
+}
+
+func renderXMPPacket(plan metadataPlan) string {
+	var b strings.Builder
+	b.WriteString(`<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>` + "\n")
+	b.WriteString(`<x:xmpmeta xmlns:x="adobe:ns:meta/">` + "\n")
+	b.WriteString(`  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">` + "\n")
+	b.WriteString(`    <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:exif="http://ns.adobe.com/exif/1.0/">` + "\n")
+	if plan.WriteTimestamp {
+		capture := plan.CaptureLocal.Format("2006-01-02T15:04:05-07:00")
+		b.WriteString("      <xmp:CreateDate>" + escapeXML(capture) + "</xmp:CreateDate>\n")
+		b.WriteString("      <xmp:ModifyDate>" + escapeXML(capture) + "</xmp:ModifyDate>\n")
+	}
+	if plan.WriteTitle {
+		b.WriteString("      <dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">" + escapeXML(plan.Title) + "</rdf:li></rdf:Alt></dc:title>\n")
+	}
+	if plan.WriteDescription {
+		b.WriteString("      <dc:description><rdf:Alt><rdf:li xml:lang=\"x-default\">" + escapeXML(plan.Description) + "</rdf:li></rdf:Alt></dc:description>\n")
+	}
+	if plan.WriteGPS {
+		b.WriteString("      <exif:GPSLatitude>" + fmt.Sprintf("%.7f", plan.GPS.Latitude) + "</exif:GPSLatitude>\n")
+		b.WriteString("      <exif:GPSLongitude>" + fmt.Sprintf("%.7f", plan.GPS.Longitude) + "</exif:GPSLongitude>\n")
+		b.WriteString("      <exif:GPSAltitude>" + fmt.Sprintf("%.2f", plan.GPS.Altitude) + "</exif:GPSAltitude>\n")
+	}
+	b.WriteString("    </rdf:Description>\n")
+	b.WriteString("  </rdf:RDF>\n")
+	b.WriteString("</x:xmpmeta>\n")
+	b.WriteString(`<?xpacket end="w"?>` + "\n")
+	return b.String()
+}
+
+func escapeXML(value string) string {
+	var b bytes.Buffer
+	if err := xml.EscapeText(&b, []byte(value)); err != nil {
+		return value
+	}
+	return b.String()
 }
 
 func buildMetadataPlan(meta imageMetadata, policy ConflictPolicy, filePath string) (metadataPlan, error) {

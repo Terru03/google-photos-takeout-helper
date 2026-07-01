@@ -8,11 +8,19 @@ import (
 )
 
 func ValidateBatchPaths(zipRoots []string, workDir string, outputDir string, dryRun bool) error {
+	var workDirs []string
+	if strings.TrimSpace(workDir) != "" {
+		workDirs = []string{workDir}
+	}
+	return ValidateBatchPathSet(zipRoots, workDirs, outputDir, dryRun)
+}
+
+func ValidateBatchPathSet(zipRoots []string, workDirs []string, outputDir string, dryRun bool) error {
 	if strings.TrimSpace(outputDir) == "" {
 		return fmt.Errorf("output folder is required")
 	}
-	if !dryRun && strings.TrimSpace(workDir) == "" {
-		return fmt.Errorf("work folder is required")
+	if !dryRun && len(nonEmptyStrings(workDirs)) == 0 {
+		return fmt.Errorf("at least one work folder is required")
 	}
 	if len(zipRoots) == 0 {
 		return fmt.Errorf("at least one ZIP root is required")
@@ -22,7 +30,11 @@ func ValidateBatchPaths(zipRoots []string, workDir string, outputDir string, dry
 	if err != nil {
 		return fmt.Errorf("resolve output folder: %w", err)
 	}
-	if !dryRun {
+	workAbsPaths := make([]string, 0, len(workDirs))
+	for _, workDir := range workDirs {
+		if strings.TrimSpace(workDir) == "" {
+			continue
+		}
 		workAbs, err := filepath.Abs(workDir)
 		if err != nil {
 			return fmt.Errorf("resolve work folder: %w", err)
@@ -30,6 +42,12 @@ func ValidateBatchPaths(zipRoots []string, workDir string, outputDir string, dry
 		if pathsOverlap(outputAbs, workAbs) {
 			return fmt.Errorf("work folder and output folder must be separate")
 		}
+		for _, existing := range workAbsPaths {
+			if pathsOverlap(existing, workAbs) {
+				return fmt.Errorf("work folders must be separate: %s and %s", existing, workDir)
+			}
+		}
+		workAbsPaths = append(workAbsPaths, workAbs)
 	}
 
 	for _, root := range zipRoots {
@@ -52,12 +70,10 @@ func ValidateBatchPaths(zipRoots []string, workDir string, outputDir string, dry
 			return fmt.Errorf("ZIP source root and output folder must be separate: %s", root)
 		}
 		if !dryRun {
-			workAbs, err := filepath.Abs(workDir)
-			if err != nil {
-				return fmt.Errorf("resolve work folder: %w", err)
-			}
-			if pathsOverlap(rootAbs, workAbs) {
-				return fmt.Errorf("ZIP source root and work folder must be separate: %s", root)
+			for _, workAbs := range workAbsPaths {
+				if pathsOverlap(rootAbs, workAbs) {
+					return fmt.Errorf("ZIP source root and work folder must be separate: %s", root)
+				}
 			}
 		}
 	}

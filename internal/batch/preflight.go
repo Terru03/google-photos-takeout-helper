@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/feloex/GoogleTakeoutFixer/internal/fixer"
+	"github.com/Terru03/google-photos-takeout-helper/internal/fixer"
 )
 
 func Preflight(options Options) (PreflightReport, error) {
@@ -40,17 +40,20 @@ func Preflight(options Options) (PreflightReport, error) {
 
 	workOptions := options
 	workOptions.ProcessOptions.DryRun = false
-	workDir, err := resolveWorkDir(workOptions, drives, zips)
+	workDirs, err := resolveWorkDirs(workOptions, drives, zips)
 	if err != nil {
 		return PreflightReport{}, err
 	}
-	options.WorkDir = workDir
+	options.WorkDirs = workDirs
+	options.WorkDir = firstWorkDir(workDirs)
 
 	report := PreflightReport{
 		ZipCount:              len(zips),
 		EstimatedMinWorkBytes: maxRequiredWorkBytes(zips, options.SafetyMarginBytes),
 		OutputDir:             options.OutputDir,
 		WorkDir:               options.WorkDir,
+		ZipRoots:              append([]string(nil), options.ZipRoots...),
+		WorkDirs:              append([]string(nil), options.WorkDirs...),
 		ManifestPath:          manifestPath(options.OutputDir),
 		StatePath:             filepath.Join(options.OutputDir, ".gtf", "state.jsonl"),
 		ZipPaths:              make([]string, 0, len(zips)),
@@ -72,13 +75,17 @@ func Preflight(options Options) (PreflightReport, error) {
 	if err != nil {
 		report.Warnings = append(report.Warnings, fmt.Sprintf("cannot check work free space: %v", err))
 	}
+	report.WorkRoots = workRootReports(options.WorkDirs, drives, report.EstimatedMinWorkBytes)
 
-	report.Warnings = append(report.Warnings, collectPathWarnings(options.ZipRoots, options.WorkDir, options.OutputDir)...)
+	report.Warnings = append(report.Warnings, collectPathWarnings(options.ZipRoots, options.WorkDirs, options.OutputDir)...)
 	if report.WorkFreeBytes > 0 && report.WorkFreeBytes < report.EstimatedMinWorkBytes {
 		report.Warnings = append(report.Warnings, fmt.Sprintf("work drive has %s free; estimated minimum is %s",
 			fixer.FormatBytes(report.WorkFreeBytes),
 			fixer.FormatBytes(report.EstimatedMinWorkBytes),
 		))
+	}
+	if onlyHDDWorkRoots(report.WorkRoots) {
+		report.Warnings = append(report.Warnings, "all detected work roots are HDD; an SSD/NVMe work root may be faster")
 	}
 	if report.OutputFreeBytes > 0 && report.OutputFreeBytes < report.TotalZipSize {
 		report.Warnings = append(report.Warnings, fmt.Sprintf("output drive has %s free; ZIP files total %s before expansion",
@@ -119,9 +126,30 @@ func FormatPreflightReport(report PreflightReport) string {
 	fmt.Fprintf(&b, "Largest ZIP: %s\n", fixer.FormatBytes(report.LargestZipBytes))
 	fmt.Fprintf(&b, "Output free: %s\n", fixer.FormatBytes(report.OutputFreeBytes))
 	fmt.Fprintf(&b, "Work free: %s\n", fixer.FormatBytes(report.WorkFreeBytes))
-	fmt.Fprintf(&b, "Estimated minimum work space: %s\n", fixer.FormatBytes(report.EstimatedMinWorkBytes))
+	fmt.Fprintf(&b, "Largest ZIP work requirement: %s\n", fixer.FormatBytes(report.EstimatedMinWorkBytes))
 	fmt.Fprintf(&b, "Output: %s\n", report.OutputDir)
-	fmt.Fprintf(&b, "Work: %s\n", report.WorkDir)
+	fmt.Fprintf(&b, "ZIP roots:\n")
+	for _, root := range report.ZipRoots {
+		fmt.Fprintf(&b, "  - %s\n", root)
+	}
+	fmt.Fprintf(&b, "Work roots:\n")
+	for _, root := range report.WorkRoots {
+		status := "usable"
+		if !root.Usable {
+			status = "not usable"
+		}
+		fmt.Fprintf(&b, "  - %s free=%s required=%s type=%s status=%s",
+			root.Path,
+			fixer.FormatBytes(root.FreeBytes),
+			fixer.FormatBytes(root.RequiredBytes),
+			root.Kind,
+			status,
+		)
+		if root.Warning != "" {
+			fmt.Fprintf(&b, " warning=%s", root.Warning)
+		}
+		fmt.Fprintf(&b, "\n")
+	}
 	fmt.Fprintf(&b, "Manifest: %s\n", report.ManifestPath)
 	if len(report.Warnings) == 0 {
 		fmt.Fprintf(&b, "Warnings: none\n")
@@ -134,12 +162,25 @@ func FormatPreflightReport(report PreflightReport) string {
 	return b.String()
 }
 
-func collectPathWarnings(zipRoots []string, workDir string, outputDir string) []string {
+func collectPathWarnings(zipRoots []string, workDirs []string, outputDir string) []string {
 	var warnings []string
 	outputAbs, outputErr := filepath.Abs(outputDir)
-	workAbs, workErr := filepath.Abs(workDir)
-	if outputErr == nil && workErr == nil && pathsOverlap(outputAbs, workAbs) {
-		warnings = append(warnings, "output and work folders overlap; choose separate folders")
+	workAbsPaths := make([]string, 0, len(workDirs))
+	for _, workDir := range workDirs {
+		workAbs, workErr := filepath.Abs(workDir)
+		if workErr != nil {
+			warnings = append(warnings, fmt.Sprintf("cannot resolve work folder %s: %v", workDir, workErr))
+			continue
+		}
+		if outputErr == nil && pathsOverlap(outputAbs, workAbs) {
+			warnings = append(warnings, fmt.Sprintf("output and work folders overlap: %s", workDir))
+		}
+		for _, existing := range workAbsPaths {
+			if pathsOverlap(existing, workAbs) {
+				warnings = append(warnings, fmt.Sprintf("work folders overlap: %s and %s", existing, workDir))
+			}
+		}
+		workAbsPaths = append(workAbsPaths, workAbs)
 	}
 	outputDrive := DriveRoot(outputDir)
 	for _, root := range zipRoots {
@@ -151,8 +192,10 @@ func collectPathWarnings(zipRoots []string, workDir string, outputDir string) []
 		if outputErr == nil && pathsOverlap(rootAbs, outputAbs) {
 			warnings = append(warnings, fmt.Sprintf("ZIP source and output overlap: %s", root))
 		}
-		if workErr == nil && pathsOverlap(rootAbs, workAbs) {
-			warnings = append(warnings, fmt.Sprintf("ZIP source and work folder overlap: %s", root))
+		for _, workAbs := range workAbsPaths {
+			if pathsOverlap(rootAbs, workAbs) {
+				warnings = append(warnings, fmt.Sprintf("ZIP source and work folder overlap: %s", root))
+			}
 		}
 		if outputDrive != "" && strings.EqualFold(DriveRoot(rootAbs), outputDrive) {
 			warnings = append(warnings, fmt.Sprintf("output drive is also used for ZIP storage: %s", outputDrive))

@@ -7,7 +7,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
-	"github.com/feloex/GoogleTakeoutFixer/internal/fixer"
+	"github.com/Terru03/google-photos-takeout-helper/internal/fixer"
 )
 
 func (s *guiState) buildReportsTab() fyne.CanvasObject {
@@ -30,9 +30,17 @@ func (s *guiState) buildReportsTab() fyne.CanvasObject {
 	}
 
 	rows := []reportRow{
-		{"Files processed", fmt.Sprintf("%d", s.runReport.Summary.TotalMedia)},
+		{"Input media found", fmt.Sprintf("%d", s.runReport.Summary.TotalMedia)},
+		{"JSON sidecars found", fmt.Sprintf("%d", s.runReport.Summary.JSONSidecarsFound)},
+		{"Matched cleanly", fmt.Sprintf("%d", s.runReport.Summary.MatchedCleanly)},
+		{"Matched with fallback", fmt.Sprintf("%d", s.runReport.Summary.MatchedWithFallback)},
+		{"Unmatched", fmt.Sprintf("%d", s.runReport.Summary.Unmatched)},
+		{"Ambiguous", fmt.Sprintf("%d", s.runReport.Summary.Ambiguous)},
+		{"Output media count", fmt.Sprintf("%d", s.runReport.Summary.OutputMedia)},
 		{"Metadata written", fmt.Sprintf("%d", s.runReport.Summary.MetadataWritten)},
+		{"XMP sidecars written", fmt.Sprintf("%d", s.runReport.Summary.XMPSidecarsWritten)},
 		{"Metadata verified", fmt.Sprintf("%d", s.runReport.Summary.MetadataVerified)},
+		{"Verification failures", fmt.Sprintf("%d", s.runReport.Summary.MetadataVerificationFailures)},
 		{"Duplicates removed", fmt.Sprintf("%d", s.runReport.Summary.DuplicatesLinked+s.runReport.Summary.DuplicatesCopied)},
 		{"Space saved (dedupe)", fixer.FormatBytes(s.runReport.Summary.ApproxDedupBytesSaved)},
 		{"Motion photos created", motionCreated(s.runReport)},
@@ -49,7 +57,7 @@ func (s *guiState) buildReportsTab() fyne.CanvasObject {
 				secondaryButton("Full audit report", func() { s.openPath(reportPath(s.outputPath, "reports", "latest.txt")) }),
 				secondaryButton("Suspicious dates CSV", func() { s.openPath(reportPath(s.outputPath, "reports", "suspicious_dates.csv")) }),
 				secondaryButton("All records JSON", func() { s.openPath(reportPath(s.outputPath, "reports", "latest.json")) }),
-				secondaryButton("Errors only", func() { s.openPath(reportPath(s.outputPath, "reports", "latest.txt")) }),
+				secondaryButton("Review CSV", func() { s.openPath(reportPath(s.outputPath, "reports", "review.csv")) }),
 				secondaryButton("Open .gtf folder", func() { s.openPath(reportPath(s.outputPath)) }),
 			),
 		),

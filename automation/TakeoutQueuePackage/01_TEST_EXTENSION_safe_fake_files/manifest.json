@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Takeout Queue TEST",
+  "version": "1.2-test",
+  "permissions": ["downloads", "alarms"],
+  "background": {
+    "service_worker": "service_worker.js"
+  }
+}

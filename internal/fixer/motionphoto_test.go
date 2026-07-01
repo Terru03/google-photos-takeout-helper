@@ -68,8 +68,8 @@ func TestRunMotionPhotoPassInvokesSingleFileMode(t *testing.T) {
 	args := readFileString(t, argsFile)
 	requireContainsArg(t, args, "--input-image", imagePath)
 	requireContainsArg(t, args, "--input-video", videoPath)
-	requireContainsArg(t, args, "--output-file", imagePath)
 	requireContains(t, args, "--overwrite")
+	requireNotContains(t, args, "--output-file")
 }
 
 func TestCleanupEmbeddedMotionPhotoVideosSkipsUnchangedImage(t *testing.T) {

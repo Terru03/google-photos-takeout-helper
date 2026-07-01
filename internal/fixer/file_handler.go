@@ -157,6 +157,26 @@ func CountProcessableFiles(sourcePath string) (int, error) {
 	return len(plans), nil
 }
 
+func CountJSONSidecars(sourcePath string) (int, error) {
+	count := 0
+	err := filepath.WalkDir(sourcePath, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			if strings.EqualFold(d.Name(), ".gtf") || strings.EqualFold(d.Name(), "logs") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.EqualFold(filepath.Ext(path), ".json") {
+			count++
+		}
+		return nil
+	})
+	return count, err
+}
+
 func DetectFileMonth(sourcePath string, sidecarPath string) (int, error) {
 	if sidecarPath != "" {
 		metadata, err := ReadJSONMetadata(sidecarPath)

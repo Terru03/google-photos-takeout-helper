@@ -92,7 +92,7 @@ func DetectMotionPhotoTool() (*MotionPhotoToolInfo, error) {
 
 	path, err := exec.LookPath(candidate)
 	if err != nil {
-		return nil, fmt.Errorf("MotionPhoto2 is required to create Windows-viewable motion photos. Place motionphoto2 next to GoogleTakeoutFixer or add it to PATH: %w", err)
+		return nil, fmt.Errorf("MotionPhoto2 is required to create Windows-viewable motion photos. Place motionphoto2 next to the app binary or add it to PATH: %w", err)
 	}
 
 	return &MotionPhotoToolInfo{Path: path}, nil
@@ -171,7 +171,6 @@ func runMotionPhotoPair(toolPath string, target *motionPhotoCleanupTarget) error
 	args := []string{
 		"--input-image", target.imageOutputPath,
 		"--input-video", target.videoOutputPath,
-		"--output-file", target.imageOutputPath,
 		"--overwrite",
 	}
 

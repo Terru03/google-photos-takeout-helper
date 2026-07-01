@@ -193,6 +193,13 @@ func requireContains(t *testing.T, body string, want string) {
 	}
 }
 
+func requireNotContains(t *testing.T, body string, unwanted string) {
+	t.Helper()
+	if strings.Contains(body, unwanted) {
+		t.Fatalf("expected %q to not contain %q", body, unwanted)
+	}
+}
+
 func requireContainsArg(t *testing.T, body string, flagName string, value string) {
 	t.Helper()
 	plain := flagName + " " + value

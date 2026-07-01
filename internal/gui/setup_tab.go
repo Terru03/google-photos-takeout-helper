@@ -23,7 +23,7 @@ func (s *guiState) buildSetupTab() fyne.CanvasObject {
 	outputSection := pathPickerRow("OUTPUT FOLDER", s.outputPath, "Change folder", s.selectOutputFolder)
 	workSection := fyne.CanvasObject(nil)
 	if s.mode == modeBatch {
-		workSection = pathPickerRow("TEMPORARY WORK FOLDER", s.workPath, "Change folder", s.selectWorkFolder)
+		workSection = s.buildWorkSection()
 	}
 
 	warnings := []fyne.CanvasObject{}
@@ -51,8 +51,10 @@ func (s *guiState) buildSetupTab() fyne.CanvasObject {
 			s.check("Restore .MOV extension", &s.options.RestoreMOVExtension),
 			s.check("Remove duplicate copies", &s.options.Deduplicate),
 			s.check("Create month subfolders", &s.options.MonthSubfolders),
-			s.performAlbumsCheck(),
 		),
+		sectionTitle("Album mode"),
+		s.albumModeSelect(),
+		smallText(albumModeHelp(s.currentOptions().AlbumMode)),
 	)
 
 	advanced := widget.NewAccordion(
@@ -88,6 +90,49 @@ func (s *guiState) buildSetupTab() fyne.CanvasObject {
 	}
 
 	return container.NewVScroll(container.NewVBox(items...))
+}
+
+func (s *guiState) buildWorkSection() fyne.CanvasObject {
+	paths := s.normalizedWorkPaths()
+	chips := container.NewVBox()
+	if len(paths) == 0 {
+		chips.Add(fieldBox("No work folders added"))
+	} else {
+		for _, root := range paths {
+			root := root
+			label := root
+			if len(label) > 80 {
+				label = fmt.Sprintf("...%s", label[len(label)-77:])
+			}
+			button := choiceButton(label, root == s.selectedWork, func() {
+				s.selectedWork = root
+				s.refreshTabs(0)
+			})
+			button.minWidth = 240
+			chips.Add(button)
+		}
+	}
+
+	remove := secondaryButton("Remove selected", s.removeSelectedWorkRoot)
+	up := secondaryButton("Move up", func() { s.moveSelectedWorkRoot(-1) })
+	down := secondaryButton("Move down", func() { s.moveSelectedWorkRoot(1) })
+	if s.selectedWork == "" {
+		remove.Disable()
+		up.Disable()
+		down.Disable()
+	}
+
+	return card("TEMPORARY WORK FOLDERS",
+		chips,
+		container.NewHBox(
+			folderButton("Add folder", s.selectWorkFolder),
+			remove,
+			up,
+			down,
+			layout.NewSpacer(),
+			smallText(fmt.Sprintf("%d selected", len(paths))),
+		),
+	)
 }
 
 func (s *guiState) buildSourceSection() fyne.CanvasObject {
@@ -137,14 +182,5 @@ func (s *guiState) check(label string, target *bool) *widget.Check {
 		s.savePreferences()
 	})
 	check.SetChecked(*target)
-	return check
-}
-
-func (s *guiState) performAlbumsCheck() *widget.Check {
-	check := widget.NewCheck("Perform album structure", func(value bool) {
-		s.options.IgnoreAlbums = !value
-		s.savePreferences()
-	})
-	check.SetChecked(!s.options.IgnoreAlbums)
 	return check
 }

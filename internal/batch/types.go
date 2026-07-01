@@ -4,19 +4,21 @@ import (
 	"context"
 	"time"
 
-	"github.com/feloex/GoogleTakeoutFixer/internal/fixer"
+	"github.com/Terru03/google-photos-takeout-helper/internal/fixer"
 )
 
 const (
-	statusPending       = "pending"
-	statusExtracting    = "extracting"
-	statusProcessing    = "processing"
-	statusCompleted     = "completed"
-	statusFailed        = "failed"
-	statusInterrupted   = "interrupted"
-	defaultOutputSubdir = "Google_Photos_Final"
-	defaultWorkSubdir   = "GTF_Work"
-	defaultMarginBytes  = int64(25 * 1024 * 1024 * 1024)
+	statusPending         = "pending"
+	statusExtracting      = "extracting"
+	statusProcessing      = "processing"
+	statusCompleted       = "completed"
+	statusCompletedReview = "completed_with_review"
+	statusFailed          = "failed"
+	statusInterrupted     = "interrupted"
+	defaultOutputSubdir   = "Google_Photos_Final"
+	defaultWorkSubdir     = "GTF_Work"
+	defaultMarginBytes    = int64(25 * 1024 * 1024 * 1024)
+	takeoutZipNameNeedle  = "takeout"
 )
 
 type DriveKind string
@@ -49,20 +51,22 @@ type ZipItem struct {
 }
 
 type ManifestEntry struct {
-	ZipName        string                  `json:"zipName"`
-	ZipPath        string                  `json:"zipPath"`
-	ZipSize        int64                   `json:"zipSize"`
-	ZipModified    time.Time               `json:"zipModified"`
-	ZipFingerprint string                  `json:"zipFingerprint"`
-	SourceDrive    string                  `json:"sourceDrive"`
-	Status         string                  `json:"status"`
-	StartTime      time.Time               `json:"startTime,omitempty"`
-	EndTime        time.Time               `json:"endTime,omitempty"`
-	ReportPath     string                  `json:"reportPath,omitempty"`
-	ExtractedRoot  string                  `json:"extractedRoot,omitempty"`
-	OutputFolder   string                  `json:"outputFolder"`
-	Error          string                  `json:"error,omitempty"`
-	Summary        *fixer.RunReportSummary `json:"summary,omitempty"`
+	ZipName          string                  `json:"zipName"`
+	ZipPath          string                  `json:"zipPath"`
+	ZipSize          int64                   `json:"zipSize"`
+	ZipModified      time.Time               `json:"zipModified"`
+	ZipFingerprint   string                  `json:"zipFingerprint"`
+	SourceDrive      string                  `json:"sourceDrive"`
+	Status           string                  `json:"status"`
+	StartTime        time.Time               `json:"startTime,omitempty"`
+	EndTime          time.Time               `json:"endTime,omitempty"`
+	ReportPath       string                  `json:"reportPath,omitempty"`
+	WorkRoot         string                  `json:"workRoot,omitempty"`
+	ExtractedRoot    string                  `json:"extractedRoot,omitempty"`
+	GooglePhotosRoot string                  `json:"googlePhotosRoot,omitempty"`
+	OutputFolder     string                  `json:"outputFolder"`
+	Error            string                  `json:"error,omitempty"`
+	Summary          *fixer.RunReportSummary `json:"summary,omitempty"`
 }
 
 type PromptFunc func(question string, choices []string, allowMultiple bool) (string, error)
@@ -78,6 +82,7 @@ type ProcessFunc func(
 type Options struct {
 	ZipRoots          []string
 	WorkDir           string
+	WorkDirs          []string
 	OutputDir         string
 	AutoDrives        bool
 	AskOnAmbiguous    bool
@@ -93,41 +98,60 @@ type Options struct {
 }
 
 type Result struct {
-	ManifestPath string
-	OutputDir    string
-	WorkDir      string
-	ZipCount     int
-	Processed    int
-	Skipped      int
-	Planned      int
-	Failed       int
-	Stopped      bool
-	Preflight    *PreflightReport
+	ManifestPath        string
+	OutputDir           string
+	WorkDir             string
+	WorkDirs            []string
+	ZipCount            int
+	Processed           int
+	CompletedWithReview int
+	Skipped             int
+	Planned             int
+	Failed              int
+	Stopped             bool
+	Preflight           *PreflightReport
+	AlbumCleanup        *fixer.AlbumCleanupResult
 }
 
 type BatchProgress struct {
 	CurrentZip    string
+	Phase         string
 	Completed     int
 	Total         int
 	FileProcessed int
 	FileTotal     int
 	CurrentFile   string
+	CurrentBytes  int64
+	TotalBytes    int64
 	LatestError   string
 	ReportPath    string
+	WorkRoot      string
+}
+
+type WorkRootReport struct {
+	Path          string    `json:"path"`
+	FreeBytes     int64     `json:"freeBytes"`
+	RequiredBytes int64     `json:"requiredBytes"`
+	Kind          DriveKind `json:"kind"`
+	Usable        bool      `json:"usable"`
+	Warning       string    `json:"warning,omitempty"`
 }
 
 type PreflightReport struct {
-	ZipCount              int      `json:"zipCount"`
-	EstimatedMediaFiles   int      `json:"estimatedMediaFiles"`
-	TotalZipSize          int64    `json:"totalZipSize"`
-	LargestZipBytes       int64    `json:"largestZipBytes"`
-	OutputFreeBytes       int64    `json:"outputFreeBytes"`
-	WorkFreeBytes         int64    `json:"workFreeBytes"`
-	EstimatedMinWorkBytes int64    `json:"estimatedMinWorkBytes"`
-	OutputDir             string   `json:"outputDir"`
-	WorkDir               string   `json:"workDir"`
-	ManifestPath          string   `json:"manifestPath"`
-	StatePath             string   `json:"statePath"`
-	Warnings              []string `json:"warnings,omitempty"`
-	ZipPaths              []string `json:"zipPaths"`
+	ZipCount              int              `json:"zipCount"`
+	EstimatedMediaFiles   int              `json:"estimatedMediaFiles"`
+	TotalZipSize          int64            `json:"totalZipSize"`
+	LargestZipBytes       int64            `json:"largestZipBytes"`
+	OutputFreeBytes       int64            `json:"outputFreeBytes"`
+	WorkFreeBytes         int64            `json:"workFreeBytes"`
+	EstimatedMinWorkBytes int64            `json:"estimatedMinWorkBytes"`
+	OutputDir             string           `json:"outputDir"`
+	WorkDir               string           `json:"workDir"`
+	ZipRoots              []string         `json:"zipRoots"`
+	WorkDirs              []string         `json:"workDirs"`
+	WorkRoots             []WorkRootReport `json:"workRoots"`
+	ManifestPath          string           `json:"manifestPath"`
+	StatePath             string           `json:"statePath"`
+	Warnings              []string         `json:"warnings,omitempty"`
+	ZipPaths              []string         `json:"zipPaths"`
 }

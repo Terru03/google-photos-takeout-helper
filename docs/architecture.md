@@ -2,17 +2,17 @@
 
 ## Goal
 
-GoogleTakeoutFixer is designed as a deterministic archive-repair tool for Google Photos Takeout exports. The core idea is that a run should be explainable, resumable, and safe to re-run.
+Google Photos Takeout Helper is designed as a deterministic archive-repair tool for Google Photos Takeout exports. The core idea is that a run should be explainable, resumable, and safe to re-run.
 
 ## Pipeline
 
 1. Validate input/output paths and runtime dependencies.
 2. Discover media and JSON sidecars into a `MediaPlan`.
 3. Resolve matches using deterministic filename and metadata heuristics.
-4. Restore metadata, deduplicate exact copies, and write audit state.
+4. Restore metadata to output files and/or XMP sidecars, deduplicate exact copies, and write audit state.
 5. Verify written metadata when enabled.
 6. Optionally run a post-processing MotionPhoto2 sweep to rebuild Windows-viewable Samsung/Google Motion Photos in-place.
-7. Emit machine-readable and human-readable reports under `OUTPUT/.gtf/`.
+7. Emit machine-readable, human-readable, and CSV review reports under `OUTPUT/.gtf/`.
 
 ## Matching Algorithm
 
@@ -54,11 +54,12 @@ Important rules:
 - JSON is treated as the authoritative migration source unless the user picks another conflict policy.
 - GPS coordinates and timezone offsets are restored together when possible.
 - Video writes target QuickTime/Keys/XMP tags instead of relying on photo-only EXIF tags.
+- XMP sidecar mode writes `media.ext.xmp` beside output media instead of modifying media bytes when the user selects sidecar-only output.
 - Verification reads metadata back with ExifTool after write when `--verify` is enabled.
 
 ## Motion Photo Strategy
 
-When `CreateMotionPhotos` / `--motion-photos` is enabled, GoogleTakeoutFixer runs [MotionPhoto2](https://github.com/PetrVys/MotionPhoto2) against the repaired output tree using recursive overwrite, incremental mode, and EXIF-based matching.
+When `CreateMotionPhotos` / `--motion-photos` is enabled, Google Photos Takeout Helper runs [MotionPhoto2](https://github.com/PetrVys/MotionPhoto2) against the repaired output tree using recursive overwrite, incremental mode, and EXIF-based matching.
 
 This design choice keeps the main Takeout repair pipeline deterministic while delegating platform-specific live-photo remuxing to a tool that already targets Samsung/Google Motion Photo compatibility for Windows Photos.
 
@@ -66,7 +67,11 @@ This design choice keeps the main Takeout repair pipeline deterministic while de
 
 Runtime artifacts are split by purpose:
 
-- User preferences: user config directory, `GoogleTakeoutFixer/config.json`
+- User preferences: user config directory, `GoogleTakeoutFixer/config.json` for compatibility with older installs
 - Per-run state, logs, reports: `OUTPUT/.gtf/`
 
 This keeps logs and reports attached to the repaired library rather than the current working directory.
+
+## Proof Report
+
+Each run writes `reports/latest.txt`, `reports/latest.json`, `reports/review.csv`, and `reports/suspicious_dates.csv`. The summary counts input media, JSON sidecars, clean matches, fallback matches, ambiguous and unmatched files, duplicate reuse, motion-photo work, metadata writes, verification failures, output media, and artifact paths.

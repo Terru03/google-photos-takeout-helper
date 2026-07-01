@@ -1,6 +1,5 @@
 # Made with much help from AI
-# Builds and releases binaries for Linux, Windows, and macOS (universal)
-# Bundles ExifTool with each release
+# Builds and releases one app binary per platform.
 name: Release
 
 on:
@@ -66,24 +65,8 @@ jobs:
           mkdir -p "${OUT}"
 
           CGO_ENABLED=1 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-            go build -ldflags "-X github.com/feloex/GoogleTakeoutFixer/internal/version.Tag=${VERSION} -s -w${{ matrix.goos == 'windows' && ' -H=windowsgui' || '' }}" \
-            -o "${OUT}/${APP_NAME}${EXT}" ./cmd/main.go
-
-          ET_VERSION=$(curl -fsSL --retry 3 https://exiftool.org/ver.txt | tr -d '[:space:]')
-          if [ "${{ matrix.archive }}" = "zip" ]; then
-            curl -fsSL --retry 3 -o et.zip "https://exiftool.org/exiftool-${ET_VERSION}_64.zip"
-            unzip -q et.zip
-            mv "$(find . -maxdepth 3 -name 'exiftool(-k).exe' | head -1)" "${OUT}/exiftool.exe"
-            find . -maxdepth 3 -type d -name 'exiftool_files' -exec cp -r {} "${OUT}/" \; 2>/dev/null || true
-          else
-            curl -fsSL --retry 3 -o et.tgz "https://exiftool.org/Image-ExifTool-${ET_VERSION}.tar.gz"
-            tar xf et.tgz
-            cp "Image-ExifTool-${ET_VERSION}/exiftool" "${OUT}/"
-            cp -r "Image-ExifTool-${ET_VERSION}/lib" "${OUT}/"
-            chmod +x "${OUT}/exiftool"
-            printf '#!/usr/bin/env bash\ncd "$(dirname "$0")"\nexec ./%s "$@"\n' "${APP_NAME}" > "${OUT}/run.sh"
-            chmod +x "${OUT}/run.sh"
-          fi
+            go build -ldflags "-X github.com/Terru03/google-photos-takeout-helper/internal/version.Tag=${VERSION} -s -w" \
+            -o "${OUT}/${APP_NAME}${EXT}" ./cmd
 
           cp LICENSE "${OUT}/LICENSE.txt"
           [ -f README.md ] && cp README.md "${OUT}/README.md"
@@ -118,19 +101,12 @@ jobs:
           mkdir -p "${OUT}"
 
           CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
-            go build -ldflags "-X github.com/feloex/GoogleTakeoutFixer/internal/version.Tag=${VERSION} -s -w" -o bin_arm64 ./cmd/main.go
+            go build -ldflags "-X github.com/Terru03/google-photos-takeout-helper/internal/version.Tag=${VERSION} -s -w" -o bin_arm64 ./cmd
           CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
             CGO_CFLAGS="-arch x86_64" CGO_LDFLAGS="-arch x86_64" \
-            go build -ldflags "-X github.com/feloex/GoogleTakeoutFixer/internal/version.Tag=${VERSION} -s -w" -o bin_amd64 ./cmd/main.go
+            go build -ldflags "-X github.com/Terru03/google-photos-takeout-helper/internal/version.Tag=${VERSION} -s -w" -o bin_amd64 ./cmd
           lipo -create -output "${OUT}/${APP_NAME}" bin_arm64 bin_amd64
           chmod +x "${OUT}/${APP_NAME}"
-
-          ET_VERSION=$(curl -fsSL --retry 3 https://exiftool.org/ver.txt | tr -d '[:space:]')
-          curl -fsSL --retry 3 -o et.tgz "https://exiftool.org/Image-ExifTool-${ET_VERSION}.tar.gz"
-          tar xf et.tgz
-          cp "Image-ExifTool-${ET_VERSION}/exiftool" "${OUT}/"
-          cp -r "Image-ExifTool-${ET_VERSION}/lib" "${OUT}/"
-          chmod +x "${OUT}/exiftool"
 
           cp LICENSE "${OUT}/LICENSE.txt"
           [ -f README.md ] && cp README.md "${OUT}/README.md"
@@ -153,10 +129,14 @@ jobs:
           path: .
           merge-multiple: true
 
+      - name: Generate checksums
+        run: sha256sum *.tar.gz *.zip > SHA256SUMS.txt
+
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             *.tar.gz
             *.zip
+            SHA256SUMS.txt
           draft: true
           generate_release_notes: true

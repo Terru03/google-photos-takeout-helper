@@ -157,8 +157,8 @@ func TestProcessRunsMotionPhotoPassWhenEnabled(t *testing.T) {
 	args := readFileString(t, argsFile)
 	requireContainsArg(t, args, "--input-image", imageOutput)
 	requireContainsArg(t, args, "--input-video", videoOutput)
-	requireContainsArg(t, args, "--output-file", imageOutput)
 	requireContains(t, args, "--overwrite")
+	requireNotContains(t, args, "--output-file")
 }
 
 func TestProcessDeletesStandaloneMotionPhotoVideoAfterEmbed(t *testing.T) {
@@ -207,7 +207,8 @@ func TestProcessDeletesStandaloneMotionPhotoVideoAfterEmbed(t *testing.T) {
 	args := readFileString(t, argsFile)
 	requireContainsArg(t, args, "--input-image", imageOutput)
 	requireContainsArg(t, args, "--input-video", videoOutput)
-	requireContainsArg(t, args, "--output-file", imageOutput)
+	requireContains(t, args, "--overwrite")
+	requireNotContains(t, args, "--output-file")
 }
 
 func TestProcessDeletesStandaloneMotionPhotoVideoAfterPartialFailedEmbed(t *testing.T) {
@@ -262,7 +263,8 @@ func TestProcessDeletesStandaloneMotionPhotoVideoAfterPartialFailedEmbed(t *test
 	args := readFileString(t, argsFile)
 	requireContainsArg(t, args, "--input-image", imageOutput)
 	requireContainsArg(t, args, "--input-video", videoOutput)
-	requireContainsArg(t, args, "--output-file", imageOutput)
+	requireContains(t, args, "--overwrite")
+	requireNotContains(t, args, "--output-file")
 }
 
 func TestProcessDeletesStandaloneMotionPhotoVideoWhenImageAlreadyMotionPhoto(t *testing.T) {

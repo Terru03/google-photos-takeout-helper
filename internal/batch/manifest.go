@@ -59,7 +59,7 @@ func (m *Manifest) Path() string {
 
 func (m *Manifest) AlreadySuccessful(item ZipItem) bool {
 	entry, ok := m.latest[item.Fingerprint]
-	return ok && entry.Status == statusCompleted
+	return ok && isSuccessfulStatus(entry.Status)
 }
 
 func (m *Manifest) LastEntry(item ZipItem) (ManifestEntry, bool) {
@@ -131,11 +131,17 @@ func isActiveStatus(status string) bool {
 	return status == statusPending || status == statusExtracting || status == statusProcessing
 }
 
+func isSuccessfulStatus(status string) bool {
+	return status == statusCompleted || status == statusCompletedReview
+}
+
 func normalizeManifestEntry(entry ManifestEntry) ManifestEntry {
 	switch entry.Status {
 	case "success":
 		entry.Status = statusCompleted
-	case "error", "needs-review":
+	case "needs-review":
+		entry.Status = statusCompletedReview
+	case "error":
 		entry.Status = statusFailed
 	case "started", "planned":
 		entry.Status = statusInterrupted

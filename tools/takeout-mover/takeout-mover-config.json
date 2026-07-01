@@ -1,0 +1,20 @@
+﻿{
+    "IncomingFolder":  "C:\\Takeout_Incoming",
+    "TargetFolders":  [
+                          "D:\\Takeout_Zips",
+                          "P:\\Takeout_Zips",
+                          "E:\\Takeout_Zips",
+                          "F:\\Takeout_Zips",
+                          "Z:\\Takeout_Zips",
+                          "G:\\Takeout_Zips"
+                      ],
+    "SafetyFreeGB":  20,
+    "StableSeconds":  120,
+    "LoopSeconds":  30,
+    "ExcludedDriveLabels":  [
+                                "Backup B"
+                            ],
+    "ExcludedDriveLetters":  [
+                                 "B:"
+                             ]
+}

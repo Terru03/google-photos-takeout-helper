@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 )
 
@@ -119,4 +120,18 @@ func (s *StateStore) CanonicalByHash(hash string) (ProcessRecord, bool) {
 	defer s.mu.RUnlock()
 	record, ok := s.hashIndex[hash]
 	return record, ok
+}
+
+func (s *StateStore) Records() []ProcessRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	records := make([]ProcessRecord, 0, len(s.records))
+	for _, record := range s.records {
+		records = append(records, record)
+	}
+	sort.SliceStable(records, func(i int, j int) bool {
+		return records[i].SourceRelPath < records[j].SourceRelPath
+	})
+	return records
 }

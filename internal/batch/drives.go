@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/feloex/GoogleTakeoutFixer/internal/fixer"
+	"github.com/Terru03/google-photos-takeout-helper/internal/fixer"
 )
 
 type psDrive struct {

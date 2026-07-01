@@ -4,25 +4,29 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
-	"github.com/feloex/GoogleTakeoutFixer/internal/fixer"
+	"github.com/Terru03/google-photos-takeout-helper/internal/fixer"
 )
 
 func (s *guiState) buildOptionsTab() fyne.CanvasObject {
-	recommended := primaryButton("Recommended", func() {
+	recommended := primaryButton("Recommended Safe Mode", func() {
 		s.options.WriteMetadata = true
+		s.options.WriteXMPSidecars = false
 		s.options.VerifyWrites = true
 		s.options.RestoreMOVExtension = true
 		s.options.Deduplicate = true
+		s.options.AlbumMode = fixer.AlbumModeUniqueOnly
+		s.options.IgnoreAlbums = false
 		s.options.DryRun = false
 		s.options.ConflictPolicy = fixer.ConflictMerge
 		s.options.DeleteSourceAfterSuccess = false
 		s.savePreferences()
 		s.refreshTabs(3)
 	})
-	dryRun := secondaryButton("Dry run", func() {
-		s.options.WriteMetadata = true
-		s.options.VerifyWrites = true
-		s.options.RestoreMOVExtension = true
+	dryRun := secondaryButton("Audit Only", func() {
+		s.options.WriteMetadata = false
+		s.options.WriteXMPSidecars = false
+		s.options.VerifyWrites = false
+		s.options.RestoreMOVExtension = false
 		s.options.Deduplicate = true
 		s.options.DryRun = true
 		s.options.ConflictPolicy = fixer.ConflictMerge
@@ -30,13 +34,21 @@ func (s *guiState) buildOptionsTab() fyne.CanvasObject {
 		s.savePreferences()
 		s.refreshTabs(3)
 	})
-
-	preserveAlbums := !s.options.IgnoreAlbums
-	preserveCheck := widget.NewCheck("Ignore album folder structure", func(value bool) {
-		s.options.IgnoreAlbums = value
+	immich := secondaryButton("Immich-ready", func() {
+		s.options.WriteMetadata = true
+		s.options.WriteXMPSidecars = true
+		s.options.VerifyWrites = true
+		s.options.RestoreMOVExtension = true
+		s.options.Deduplicate = true
+		s.options.KeepLiveVideo = true
+		s.options.AlbumMode = fixer.AlbumModeUniqueOnly
+		s.options.IgnoreAlbums = false
+		s.options.DryRun = false
+		s.options.ConflictPolicy = fixer.ConflictMerge
+		s.options.DeleteSourceAfterSuccess = false
 		s.savePreferences()
+		s.refreshTabs(3)
 	})
-	preserveCheck.SetChecked(s.options.IgnoreAlbums)
 
 	conflict := widget.NewSelect([]string{"Merge", "Prefer Google sidecar", "Prefer embedded"}, func(value string) {
 		switch value {
@@ -67,10 +79,10 @@ func (s *guiState) buildOptionsTab() fyne.CanvasObject {
 	destructive.CloseAll()
 
 	outputGrid := checkboxGrid(
-		s.check("Extract metadata into photos", &s.options.WriteMetadata),
+		s.check("Write metadata into files", &s.options.WriteMetadata),
+		s.check("Write XMP sidecars", &s.options.WriteXMPSidecars),
 		s.check("Remove duplicate copies", &s.options.Deduplicate),
 		s.check("Create month subfolders", &s.options.MonthSubfolders),
-		preserveCheck,
 		s.check("Verify metadata after writing", &s.options.VerifyWrites),
 		s.check("Restore .MOV extension", &s.options.RestoreMOVExtension),
 		s.check("Flatten all albums into one folder", &s.options.Flatten),
@@ -78,8 +90,13 @@ func (s *guiState) buildOptionsTab() fyne.CanvasObject {
 	)
 
 	return container.NewVScroll(container.NewVBox(
-		card("QUICK PRESETS", container.NewGridWithColumns(2, recommended, dryRun)),
-		card("OUTPUT ORGANISATION", outputGrid, smallText(boolNote("Album folders preserved", preserveAlbums))),
+		card("QUICK PRESETS", container.NewGridWithColumns(3, recommended, dryRun, immich)),
+		card("OUTPUT ORGANISATION",
+			outputGrid,
+			sectionTitle("Album mode"),
+			s.albumModeSelect(),
+			smallText(albumModeHelp(s.currentOptions().AlbumMode)),
+		),
 		card("MOTION & LIVE PHOTOS",
 			checkboxGrid(
 				s.check("Create Windows Motion Photos", &s.options.CreateMotionPhotos),
@@ -96,6 +113,48 @@ func (s *guiState) buildOptionsTab() fyne.CanvasObject {
 			smallText("Logs and reports are written to .gtf beside output."),
 		),
 	))
+}
+
+func (s *guiState) albumModeSelect() *widget.Select {
+	labels := []string{
+		"Timeline + unique album files",
+		"Timeline only",
+		"All album folders",
+	}
+	selectBox := widget.NewSelect(labels, func(value string) {
+		switch value {
+		case "Timeline only":
+			s.options.AlbumMode = fixer.AlbumModeTimelineOnly
+			s.options.IgnoreAlbums = true
+		case "All album folders":
+			s.options.AlbumMode = fixer.AlbumModeAll
+			s.options.IgnoreAlbums = false
+		default:
+			s.options.AlbumMode = fixer.AlbumModeUniqueOnly
+			s.options.IgnoreAlbums = false
+		}
+		s.savePreferences()
+	})
+	switch s.currentOptions().AlbumMode {
+	case fixer.AlbumModeTimelineOnly:
+		selectBox.SetSelected("Timeline only")
+	case fixer.AlbumModeAll:
+		selectBox.SetSelected("All album folders")
+	default:
+		selectBox.SetSelected("Timeline + unique album files")
+	}
+	return selectBox
+}
+
+func albumModeHelp(mode fixer.AlbumMode) string {
+	switch mode {
+	case fixer.AlbumModeTimelineOnly:
+		return "Only Photos from YYYY folders are written."
+	case fixer.AlbumModeAll:
+		return "Timeline and all album folders are written."
+	default:
+		return "Timeline is kept. Album files with exact copies in timeline are removed at end."
+	}
 }
 
 func boolNote(label string, value bool) string {

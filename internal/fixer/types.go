@@ -35,7 +35,9 @@ func ParseConflictPolicy(value string) (ConflictPolicy, error) {
 type ProcessOptions struct {
 	UseSymlinks              bool
 	WriteMetadata            bool
+	WriteXMPSidecars         bool
 	MonthSubfolders          bool
+	AlbumMode                AlbumMode
 	IgnoreAlbums             bool
 	Flatten                  bool
 	CreateMotionPhotos       bool
@@ -55,6 +57,7 @@ func DefaultProcessOptions() ProcessOptions {
 		Deduplicate:         true,
 		VerifyWrites:        true,
 		ConflictPolicy:      ConflictMerge,
+		AlbumMode:           AlbumModeUniqueOnly,
 	}
 }
 
@@ -62,7 +65,92 @@ func (o ProcessOptions) Normalized() ProcessOptions {
 	if o.ConflictPolicy == "" {
 		o.ConflictPolicy = ConflictPreferJSON
 	}
+	if o.AlbumMode == "" {
+		if o.IgnoreAlbums {
+			o.AlbumMode = AlbumModeTimelineOnly
+		} else {
+			o.AlbumMode = AlbumModeAll
+		}
+	}
+	switch o.AlbumMode {
+	case AlbumModeTimelineOnly:
+		o.IgnoreAlbums = true
+	case AlbumModeUniqueOnly, AlbumModeAll:
+		o.IgnoreAlbums = false
+	default:
+		o.AlbumMode = AlbumModeAll
+		o.IgnoreAlbums = false
+	}
+	if !o.WriteMetadata {
+		o.VerifyWrites = false
+	}
 	return o
+}
+
+type AlbumMode string
+
+const (
+	AlbumModeAll          AlbumMode = "all"
+	AlbumModeTimelineOnly AlbumMode = "timeline-only"
+	AlbumModeUniqueOnly   AlbumMode = "unique-only"
+)
+
+func ParseAlbumMode(value string) (AlbumMode, error) {
+	switch AlbumMode(value) {
+	case "", AlbumModeUniqueOnly:
+		return AlbumModeUniqueOnly, nil
+	case AlbumModeAll:
+		return AlbumModeAll, nil
+	case AlbumModeTimelineOnly:
+		return AlbumModeTimelineOnly, nil
+	default:
+		return "", fmt.Errorf("unknown album mode %q", value)
+	}
+}
+
+type MetadataOutputMode string
+
+const (
+	MetadataOutputFile MetadataOutputMode = "file"
+	MetadataOutputXMP  MetadataOutputMode = "xmp"
+	MetadataOutputBoth MetadataOutputMode = "both"
+	MetadataOutputNone MetadataOutputMode = "none"
+)
+
+func ParseMetadataOutputMode(value string) (MetadataOutputMode, error) {
+	switch MetadataOutputMode(value) {
+	case "", MetadataOutputFile:
+		return MetadataOutputFile, nil
+	case MetadataOutputXMP:
+		return MetadataOutputXMP, nil
+	case MetadataOutputBoth:
+		return MetadataOutputBoth, nil
+	case MetadataOutputNone:
+		return MetadataOutputNone, nil
+	default:
+		return "", fmt.Errorf("unknown metadata output mode %q", value)
+	}
+}
+
+func (mode MetadataOutputMode) WritesFiles() bool {
+	return mode == MetadataOutputFile || mode == MetadataOutputBoth
+}
+
+func (mode MetadataOutputMode) WritesXMPSidecars() bool {
+	return mode == MetadataOutputXMP || mode == MetadataOutputBoth
+}
+
+func MetadataOutputModeForOptions(options ProcessOptions) MetadataOutputMode {
+	switch {
+	case options.WriteMetadata && options.WriteXMPSidecars:
+		return MetadataOutputBoth
+	case options.WriteXMPSidecars:
+		return MetadataOutputXMP
+	case options.WriteMetadata:
+		return MetadataOutputFile
+	default:
+		return MetadataOutputNone
+	}
 }
 
 type MatchStatus string

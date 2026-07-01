@@ -7,7 +7,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/layout"
-	"github.com/feloex/GoogleTakeoutFixer/internal/fixer"
+	"github.com/Terru03/google-photos-takeout-helper/internal/fixer"
 )
 
 func (s *guiState) buildProgressTab() fyne.CanvasObject {
@@ -24,13 +24,22 @@ func (s *guiState) buildProgressTab() fyne.CanvasObject {
 	default:
 		content = s.buildEmptyProgressScreen()
 	}
-	return container.NewVScroll(content)
+	if s.progressScroll == nil {
+		s.progressScroll = container.NewVScroll(content)
+		return s.progressScroll
+	}
+	offset := s.progressScroll.Offset
+	s.progressScroll.Content = content
+	s.progressScroll.Refresh()
+	s.progressScroll.ScrollToOffset(offset)
+	return s.progressScroll
 }
 
 func (s *guiState) buildPreflightScreen() fyne.CanvasObject {
 	status := badge("Ready", colGreenBg, colGreen)
 	warnings := []fyne.CanvasObject{}
 	stats := []fyne.CanvasObject{}
+	workRootRows := []fyne.CanvasObject{}
 	if s.preflight != nil {
 		if len(s.preflight.Warnings) > 0 {
 			status = badge("Warning", colYellowBg, colYellow)
@@ -44,6 +53,19 @@ func (s *guiState) buildPreflightScreen() fyne.CanvasObject {
 			statCard(formatBytes(s.preflight.TotalZipSize), "total ZIP size"),
 			statCard(formatBytes(s.preflight.LargestZipBytes), "largest ZIP"),
 			statCard(formatBytes(s.preflight.OutputFreeBytes), "output drive free"),
+		}
+		for _, root := range s.preflight.WorkRoots {
+			line := fmt.Sprintf("%s free, needs %s, type %s: %s",
+				formatBytes(root.FreeBytes),
+				formatBytes(root.RequiredBytes),
+				root.Kind,
+				root.Path,
+			)
+			if root.Usable {
+				workRootRows = append(workRootRows, successBanner(line))
+			} else {
+				workRootRows = append(workRootRows, warningBanner(line))
+			}
 		}
 	} else {
 		stats = []fyne.CanvasObject{
@@ -69,6 +91,7 @@ func (s *guiState) buildPreflightScreen() fyne.CanvasObject {
 	return container.NewVBox(
 		container.NewBorder(nil, nil, sectionTitle("Preflight complete"), status),
 		statGrid(stats...),
+		card("WORK ROOTS", workRootRows...),
 		container.NewVBox(warnings...),
 		checklist,
 		container.NewHBox(
@@ -107,7 +130,14 @@ func (s *guiState) buildProcessingScreen() fyne.CanvasObject {
 		progressSection("CURRENT ZIP", filePercent(s.fileProcessed, s.fileTotal)),
 		card("CURRENT FILE", fieldBox(currentFile), smallText("ZIP: "+currentZIP)),
 		card("STAGE", stageRow(s.stage)),
-		card("LOG", logBox(s.logLines)),
+		card("LOG",
+			container.NewHBox(
+				secondaryButton("Copy log", s.copyLogToClipboard),
+				secondaryButton("Open log folder", func() { s.openPath(reportPath(s.outputPath, "logs")) }),
+				layout.NewSpacer(),
+			),
+			s.logBox(),
+		),
 		container.NewHBox(
 			dangerButton("Stop After Current ZIP", s.stopAfterCurrentZIP),
 			dangerButton("Cancel Immediately", s.cancelImmediately),

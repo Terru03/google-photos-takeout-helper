@@ -3,6 +3,7 @@ package fixer
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -15,6 +16,60 @@ func TestDiscoverMediaPlanMatchesDuplicateSuffixSidecar(t *testing.T) {
 
 	writeTestFile(t, filepath.Join(albumDir, "IMG_0001(1).jpg"), "image")
 	writeTestFile(t, filepath.Join(albumDir, "IMG_0001.jpg(1).json"), `{}`)
+
+	plans, err := DiscoverMediaPlan(root, ProcessOptions{})
+	if err != nil {
+		t.Fatalf("DiscoverMediaPlan returned error: %v", err)
+	}
+	if len(plans) != 1 {
+		t.Fatalf("expected 1 plan, got %d", len(plans))
+	}
+
+	if plans[0].MatchStatus != MatchStatusMatched {
+		t.Fatalf("expected matched status, got %s", plans[0].MatchStatus)
+	}
+	if plans[0].MatchStrategy != MatchStrategyNormalizedName {
+		t.Fatalf("expected normalized-name strategy, got %s", plans[0].MatchStrategy)
+	}
+}
+
+func TestDiscoverMediaPlanMatchesEditedVariantSidecar(t *testing.T) {
+	root := t.TempDir()
+	albumDir := filepath.Join(root, "Photos from 2020")
+	if err := os.MkdirAll(albumDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeTestFile(t, filepath.Join(albumDir, "IMG_0001-edited.jpg"), "image")
+	writeTestFile(t, filepath.Join(albumDir, "IMG_0001.jpg.json"), `{"title":"IMG_0001.jpg"}`)
+
+	plans, err := DiscoverMediaPlan(root, ProcessOptions{})
+	if err != nil {
+		t.Fatalf("DiscoverMediaPlan returned error: %v", err)
+	}
+	if len(plans) != 1 {
+		t.Fatalf("expected 1 plan, got %d", len(plans))
+	}
+
+	if plans[0].MatchStatus != MatchStatusMatched {
+		t.Fatalf("expected matched status, got %s", plans[0].MatchStatus)
+	}
+	if plans[0].MatchStrategy != MatchStrategyNormalizedName {
+		t.Fatalf("expected normalized-name strategy, got %s", plans[0].MatchStrategy)
+	}
+}
+
+func TestDiscoverMediaPlanMatchesLongFilenameSidecar(t *testing.T) {
+	root := t.TempDir()
+	albumDir := filepath.Join(root, "Photos from 2020")
+	if err := os.MkdirAll(albumDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	longStem := "IMG_" + strings.Repeat("1234567890", 6)
+	truncatedStem := longStem[:46]
+	writeTestFile(t, filepath.Join(albumDir, longStem+".jpg"), "image")
+	writeTestFile(t, filepath.Join(albumDir, truncatedStem+".jpg.json"), `{}`)
 
 	plans, err := DiscoverMediaPlan(root, ProcessOptions{})
 	if err != nil {

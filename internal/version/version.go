@@ -1,5 +1,5 @@
 /*
-GoogleTakeoutFixer - A tool to easily clean and organize Google Photos Takeout exports
+Google Photos Takeout Helper - A tool to clean and organize Google Photos Takeout exports
 Copyright (C) 2026 feloex
 
 This program is free software: you can redistribute it and/or modify

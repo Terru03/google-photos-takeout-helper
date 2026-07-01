@@ -100,6 +100,11 @@ func Process(
 	}
 
 	report := NewRunReport(sourcePath, outputPath, options)
+	if sidecarCount, err := CountJSONSidecars(sourcePath); err != nil {
+		Log(LoggerWarn, "Failed to count JSON sidecars: %v", err)
+	} else {
+		report.SetJSONSidecarsFound(sidecarCount)
+	}
 	defer func() {
 		if err := report.Write(runtimePaths.StateDir); err != nil {
 			Log(LoggerError, "Failed to write audit report: %v", err)
@@ -267,6 +272,15 @@ func processPlan(
 				record.Status = OperationError
 				record.Error = err.Error()
 			}
+			if record.Status != OperationError && options.WriteXMPSidecars && plan.MatchStatus == MatchStatusMatched && plan.Metadata != nil {
+				metadataResult, err := WriteMetadataXMPSidecar(destPath, *plan.Metadata, options.ConflictPolicy)
+				record.Conflicts = metadataResult.Conflicts
+				record.MetadataWritten = metadataResult.MetadataWritten
+				record.UsedXMPSidecar = metadataResult.UsedXMPSidecar
+				if err != nil {
+					record.Error = joinProblem(record.Error, fmt.Sprintf("XMP sidecar write failed: %v", err))
+				}
+			}
 			return record, suspiciousDates
 		}
 	}
@@ -289,21 +303,34 @@ func processPlan(
 		return record, suspiciousDates
 	}
 
-	if options.WriteMetadata && plan.MatchStatus == MatchStatusMatched && plan.Metadata != nil {
-		metadataResult, err := ApplyMetadata(destPath, *plan.Metadata, options.ConflictPolicy)
-		record.Conflicts = metadataResult.Conflicts
-		record.MetadataWritten = metadataResult.MetadataWritten
-		record.UsedXMPSidecar = metadataResult.UsedXMPSidecar
+	if (options.WriteMetadata || options.WriteXMPSidecars) && plan.MatchStatus == MatchStatusMatched && plan.Metadata != nil {
+		if options.WriteMetadata {
+			metadataResult, err := ApplyMetadata(destPath, *plan.Metadata, options.ConflictPolicy)
+			record.Conflicts = metadataResult.Conflicts
+			record.MetadataWritten = metadataResult.MetadataWritten
 
-		if err != nil {
-			record.Error = joinProblem(record.Error, fmt.Sprintf("metadata write failed: %v", err))
+			if err != nil {
+				record.Error = joinProblem(record.Error, fmt.Sprintf("metadata write failed: %v", err))
+			}
+
+			if options.VerifyWrites && metadataResult.MetadataWritten {
+				if err := VerifyMetadata(destPath, metadataResult.MetadataPlan); err != nil {
+					record.Error = joinProblem(record.Error, fmt.Sprintf("verification failed: %v", err))
+				} else {
+					record.MetadataVerified = true
+				}
+			}
 		}
 
-		if options.VerifyWrites && metadataResult.MetadataWritten {
-			if err := VerifyMetadata(destPath, metadataResult.MetadataPlan); err != nil {
-				record.Error = joinProblem(record.Error, fmt.Sprintf("verification failed: %v", err))
-			} else {
-				record.MetadataVerified = true
+		if options.WriteXMPSidecars {
+			metadataResult, err := WriteMetadataXMPSidecar(destPath, *plan.Metadata, options.ConflictPolicy)
+			if len(record.Conflicts) == 0 {
+				record.Conflicts = metadataResult.Conflicts
+			}
+			record.MetadataWritten = record.MetadataWritten || metadataResult.MetadataWritten
+			record.UsedXMPSidecar = metadataResult.UsedXMPSidecar
+			if err != nil {
+				record.Error = joinProblem(record.Error, fmt.Sprintf("XMP sidecar write failed: %v", err))
 			}
 		}
 	}
@@ -311,7 +338,7 @@ func processPlan(
 	switch {
 	case record.MetadataWritten:
 		record.Status = OperationCopiedWithMetadata
-	case options.WriteMetadata:
+	case options.WriteMetadata || options.WriteXMPSidecars:
 		record.Status = OperationCopiedWithoutMeta
 	default:
 		record.Status = OperationCopied

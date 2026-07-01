@@ -1,4 +1,4 @@
-# Contributing to GoogleTakeoutFixer
+# Contributing to Google Photos Takeout Helper
 
 First off, thank you for considering contributing to this project! I really appreciate any help!
 
@@ -11,7 +11,7 @@ First off, thank you for considering contributing to this project! I really appr
 ## Reporting bugs
 Before reporting a bug, please make sure to do the following:
 1. Check the project issue tracker to see if the bug has already been reported.
-2. Make sure you are using the latest version of GoogleTakeoutFixer
+2. Make sure you are using the latest version of Google Photos Takeout Helper
 3. Make sure you followed the instructions in the README correctly.
 
 A good bug report includes the following information:
@@ -31,7 +31,7 @@ Before submitting a pull request, please check the project issue tracker to see 
 2. Create a new branch for your changes
 3. Make your changes following the existing code style and conventions
 4. Run the standard checks:
-   - `go test ./internal/fixer ./internal/cli`
+   - `go test ./...`
    - `golangci-lint run ./internal/fixer/... ./internal/cli/...`
    - `go build ./cmd/gtf-cli`
 5. Use `pre-commit install` if you want the repository hooks locally

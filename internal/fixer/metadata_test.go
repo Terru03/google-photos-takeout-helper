@@ -139,6 +139,41 @@ func TestApplyMetadataWritesVideoArgsWithoutQuickTimeGPSCoordinates(t *testing.T
 	}
 }
 
+func TestWriteMetadataXMPSidecarWritesSidecarFile(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "image.jpg")
+	if err := os.WriteFile(filePath, []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := imageMetadata{
+		Title:       "Sun & Sea",
+		Description: "A <safe> caption",
+		PhotoTakenTime: takeoutTimestamp{
+			Timestamp: "1704067200",
+		},
+		GeoData: takeoutGeoData{
+			Latitude:  37.3318,
+			Longitude: -122.0312,
+			Altitude:  10,
+		},
+	}
+
+	result, err := WriteMetadataXMPSidecar(filePath, meta, ConflictPreferJSON)
+	if err != nil {
+		t.Fatalf("WriteMetadataXMPSidecar returned error: %v", err)
+	}
+	if !result.MetadataWritten || !result.UsedXMPSidecar {
+		t.Fatalf("expected XMP sidecar write result, got %+v", result)
+	}
+
+	body := readFileString(t, filePath+".xmp")
+	requireContains(t, body, "<xmp:CreateDate>")
+	requireContains(t, body, "Sun &amp; Sea")
+	requireContains(t, body, "A &lt;safe&gt; caption")
+	requireContains(t, body, "<exif:GPSLatitude>37.3318000</exif:GPSLatitude>")
+	requireContains(t, body, "<exif:GPSLongitude>-122.0312000</exif:GPSLongitude>")
+}
+
 func TestNewExifToolCommandUsesArgFileOnWindows(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("windows-specific argfile behavior")

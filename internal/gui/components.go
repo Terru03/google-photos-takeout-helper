@@ -11,7 +11,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
-	"github.com/feloex/GoogleTakeoutFixer/internal/fixer"
+	"github.com/Terru03/google-photos-takeout-helper/internal/fixer"
 )
 
 func coloredPanel(bg color.Color, border color.Color, radius float32, content fyne.CanvasObject) fyne.CanvasObject {
@@ -39,7 +39,7 @@ func fieldBox(text string) fyne.CanvasObject {
 	if strings.TrimSpace(text) == "" {
 		text = "Not selected"
 	}
-	label := widget.NewLabel(text)
+	label := widget.NewLabel(shortDisplayText(text, 96))
 	label.Wrapping = fyne.TextWrapOff
 	label.Truncation = fyne.TextTruncateEllipsis
 	return coloredPanel(colField, colBorder, fieldRadius, label)
@@ -53,7 +53,7 @@ func sectionTitle(text string) fyne.CanvasObject {
 }
 
 func smallText(text string) fyne.CanvasObject {
-	t := canvas.NewText(text, colMuted)
+	t := canvas.NewText(shortDisplayText(text, 96), colMuted)
 	t.TextSize = 10
 	return t
 }
@@ -85,7 +85,7 @@ func banner(prefix string, text string, bg color.Color, border color.Color) fyne
 	prefixText := canvas.NewText(prefix, border)
 	prefixText.TextStyle = fyne.TextStyle{Bold: true}
 	prefixText.TextSize = 11
-	label := widget.NewLabel(text)
+	label := widget.NewLabel(wrapLongWords(text, 70))
 	label.Wrapping = fyne.TextWrapWord
 	return coloredPanel(bg, border, 6, container.NewBorder(nil, nil, prefixText, nil, label))
 }
@@ -143,20 +143,86 @@ func stageRow(active string) fyne.CanvasObject {
 	return container.NewHBox(items...)
 }
 
-func logBox(lines []string) fyne.CanvasObject {
+type readOnlyLogEntry struct {
+	widget.Entry
+}
+
+func newReadOnlyLogEntry() *readOnlyLogEntry {
+	entry := &readOnlyLogEntry{}
+	entry.ExtendBaseWidget(entry)
+	entry.MultiLine = true
+	entry.Wrapping = fyne.TextWrapOff
+	entry.Scroll = fyne.ScrollBoth
+	entry.TextStyle = fyne.TextStyle{Monospace: true}
+	entry.SetMinRowsVisible(12)
+	return entry
+}
+
+func (e *readOnlyLogEntry) TypedRune(_ rune) {
+}
+
+func (e *readOnlyLogEntry) TypedKey(event *fyne.KeyEvent) {
+	switch event.Name {
+	case fyne.KeyBackspace, fyne.KeyDelete, fyne.KeyReturn, fyne.KeyEnter, fyne.KeyTab:
+		return
+	default:
+		e.Entry.TypedKey(event)
+	}
+}
+
+func (e *readOnlyLogEntry) TypedShortcut(shortcut fyne.Shortcut) {
+	switch shortcut.(type) {
+	case *fyne.ShortcutPaste, *fyne.ShortcutCut:
+		return
+	default:
+		e.Entry.TypedShortcut(shortcut)
+	}
+}
+
+func (s *guiState) logBox() fyne.CanvasObject {
+	entry := s.ensureLogEntry()
+	return coloredPanel(color.NRGBA{R: 0x17, G: 0x18, B: 0x16, A: 0xff}, colBorder, fieldRadius, entry)
+}
+
+func (s *guiState) ensureLogEntry() *readOnlyLogEntry {
+	if s.logEntry == nil {
+		s.logEntry = newReadOnlyLogEntry()
+	}
+	s.updateLogView()
+	return s.logEntry
+}
+
+func (s *guiState) updateLogView() {
+	if s.logEntry == nil {
+		return
+	}
+	body := logTextForDisplay(s.logLines)
+	if s.logEntry.Text == body {
+		return
+	}
+	s.logEntry.SetText(body)
+	moveEntryCursorToEnd(&s.logEntry.Entry)
+}
+
+func (s *guiState) copyLogToClipboard() {
+	if s.app == nil {
+		return
+	}
+	s.app.Clipboard().SetContent(logTextForDisplay(s.logLines))
+}
+
+func logTextForDisplay(lines []string) string {
 	if len(lines) == 0 {
-		lines = []string{"[info] Logs will appear here."}
+		return "[info] Logs will appear here."
 	}
-	start := 0
-	if len(lines) > 12 {
-		start = len(lines) - 12
-	}
-	body := strings.Join(lines[start:], "\n")
-	text := widget.NewLabelWithStyle(body, fyne.TextAlignLeading, fyne.TextStyle{Monospace: true})
-	text.Wrapping = fyne.TextWrapWord
-	scroll := container.NewVScroll(text)
-	scroll.SetMinSize(fyne.NewSize(0, 150))
-	return coloredPanel(color.NRGBA{R: 0x17, G: 0x18, B: 0x16, A: 0xff}, colBorder, fieldRadius, scroll)
+	return strings.Join(lines, "\n")
+}
+
+func moveEntryCursorToEnd(entry *widget.Entry) {
+	lines := strings.Split(entry.Text, "\n")
+	entry.CursorRow = len(lines) - 1
+	entry.CursorColumn = len([]rune(lines[len(lines)-1]))
+	entry.Refresh()
 }
 
 func emptyCard(title string, body string) fyne.CanvasObject {
@@ -184,9 +250,50 @@ func cleanPathName(path string) string {
 	}
 	base := filepath.Base(path)
 	if base == "." || base == string(filepath.Separator) {
-		return path
+		return shortDisplayText(path, 96)
 	}
-	return base
+	return shortDisplayText(base, 96)
+}
+
+func shortDisplayText(text string, max int) string {
+	runes := []rune(text)
+	if max <= 0 || len(runes) <= max {
+		return text
+	}
+	if max <= 6 {
+		return string(runes[:max])
+	}
+	head := max / 2
+	tail := max - head - 3
+	return string(runes[:head]) + "..." + string(runes[len(runes)-tail:])
+}
+
+func wrapLongWords(text string, maxWord int) string {
+	if maxWord <= 0 || text == "" {
+		return text
+	}
+	var b strings.Builder
+	wordLen := 0
+	for _, r := range text {
+		if r == '\n' || r == '\r' || r == '\t' || r == ' ' {
+			wordLen = 0
+			b.WriteRune(r)
+			continue
+		}
+		if r == '\\' || r == '/' {
+			wordLen = 0
+			b.WriteRune(r)
+			b.WriteRune(' ')
+			continue
+		}
+		if wordLen >= maxWord {
+			b.WriteRune('\n')
+			wordLen = 0
+		}
+		b.WriteRune(r)
+		wordLen++
+	}
+	return b.String()
 }
 
 func reportPath(output string, parts ...string) string {
