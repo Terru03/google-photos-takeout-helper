@@ -56,6 +56,44 @@ func IsMediaFile(path string) bool {
 	return isImage || isVideo
 }
 
+func DetectActualImageExtension(path string) (string, bool) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+
+	var header [32]byte
+	count, err := io.ReadFull(file, header[:])
+	if err != nil && err != io.ErrUnexpectedEOF {
+		return "", false
+	}
+	data := header[:count]
+
+	if len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff {
+		return ".jpg", true
+	}
+	if len(data) >= 8 &&
+		data[0] == 0x89 &&
+		string(data[1:4]) == "PNG" &&
+		data[4] == 0x0d &&
+		data[5] == 0x0a &&
+		data[6] == 0x1a &&
+		data[7] == 0x0a {
+		return ".png", true
+	}
+	if len(data) >= 12 && string(data[4:8]) == "ftyp" {
+		switch strings.ToLower(string(data[8:12])) {
+		case "heic", "heix", "hevc", "hevx", "heim", "heis", "hevm", "hevs":
+			return ".heic", true
+		}
+	}
+
+	return "", false
+}
+
 func DuplicateFile(inputPath string, outputPath string) error {
 	sourceInfo, err := os.Stat(inputPath)
 	if err != nil {

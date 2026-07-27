@@ -120,7 +120,7 @@ func TestProcessPlanDeduplicatesAgainstExistingState(t *testing.T) {
 	}
 }
 
-func TestProcessPlanRestoresOriginalBytesWhenMetadataWriteFails(t *testing.T) {
+func TestProcessPlanRestoresOriginalBytesAndWritesXMPSidecarWhenMetadataWriteFails(t *testing.T) {
 	root := t.TempDir()
 	outputRoot := filepath.Join(root, "output")
 	sourcePath := filepath.Join(root, "Photos from 2024", "IMG_0001.jpg")
@@ -157,14 +157,52 @@ func TestProcessPlanRestoresOriginalBytesWhenMetadataWriteFails(t *testing.T) {
 		Metadata:     &metadata,
 	}, ProcessOptions{WriteMetadata: true}, stateStore)
 
-	if record.Status != OperationCopiedWithoutMeta {
-		t.Fatalf("status = %s, want %s", record.Status, OperationCopiedWithoutMeta)
+	if record.Status != OperationCopiedWithMetadata {
+		t.Fatalf("status = %s, want %s", record.Status, OperationCopiedWithMetadata)
 	}
 	if !strings.Contains(record.Error, "metadata write failed") {
 		t.Fatalf("missing metadata error: %q", record.Error)
 	}
 	if got := readFileString(t, outputPath); got != "clean-original" {
 		t.Fatalf("failed metadata write changed output bytes: %q", got)
+	}
+	if !record.MetadataWritten || !record.UsedXMPSidecar {
+		t.Fatalf("metadata fallback missing: %#v", record)
+	}
+	if !FileExists(outputPath + ".xmp") {
+		t.Fatal("expected XMP metadata fallback")
+	}
+}
+
+func TestResolveOutputNameCorrectsPNGStoredAsJPG(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "photo.jpg")
+	pngHeader := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
+	if err := os.WriteFile(sourcePath, pngHeader, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := resolveOutputName(MediaPlan{
+		SourcePath: sourcePath,
+		OutputName: "photo.jpg",
+	}, ProcessOptions{})
+	if got != "photo.png" {
+		t.Fatalf("output name = %q, want photo.png", got)
+	}
+}
+
+func TestResolveOutputNameCorrectsJPEGStoredAsHEIC(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "photo.HEIC")
+	jpegHeader := []byte{0xff, 0xd8, 0xff, 0xe0}
+	if err := os.WriteFile(sourcePath, jpegHeader, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := resolveOutputName(MediaPlan{
+		SourcePath: sourcePath,
+		OutputName: "photo.HEIC",
+	}, ProcessOptions{})
+	if got != "photo.jpg" {
+		t.Fatalf("output name = %q, want photo.jpg", got)
 	}
 }
 

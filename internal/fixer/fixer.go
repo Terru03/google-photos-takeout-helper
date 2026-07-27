@@ -344,6 +344,16 @@ func processPlanToRoots(
 					record.Error = joinProblem(record.Error, fmt.Sprintf("restore source after metadata failure: %v", restoreErr))
 					return record, suspiciousDates
 				}
+				fallbackResult, fallbackErr := WriteMetadataXMPSidecar(workingDestPath, *plan.Metadata, options.ConflictPolicy)
+				if fallbackErr != nil {
+					record.Error = joinProblem(record.Error, fmt.Sprintf("XMP metadata fallback failed: %v", fallbackErr))
+				} else if fallbackResult.MetadataWritten {
+					record.MetadataWritten = true
+					record.UsedXMPSidecar = true
+					if len(record.Conflicts) == 0 {
+						record.Conflicts = fallbackResult.Conflicts
+					}
+				}
 			}
 
 			if options.VerifyWrites && metadataResult.MetadataWritten {
@@ -361,7 +371,7 @@ func processPlanToRoots(
 			}
 		}
 
-		if options.WriteXMPSidecars {
+		if options.WriteXMPSidecars && !record.UsedXMPSidecar {
 			metadataResult, err := WriteMetadataXMPSidecar(workingDestPath, *plan.Metadata, options.ConflictPolicy)
 			if len(record.Conflicts) == 0 {
 				record.Conflicts = metadataResult.Conflicts
@@ -433,6 +443,13 @@ func existingFileHash(path string) (string, bool) {
 
 func resolveOutputName(plan MediaPlan, options ProcessOptions) string {
 	fileName := plan.OutputName
+	sourceExt := strings.ToLower(filepath.Ext(fileName))
+	if _, isImage := imageExtensions[sourceExt]; isImage {
+		if actualExt, ok := DetectActualImageExtension(plan.SourcePath); ok &&
+			!equivalentImageExtensions(sourceExt, actualExt) {
+			fileName = strings.TrimSuffix(fileName, filepath.Ext(fileName)) + actualExt
+		}
+	}
 	if !options.RestoreMOVExtension || !strings.EqualFold(filepath.Ext(fileName), ".mp4") {
 		return fileName
 	}
@@ -449,6 +466,15 @@ func resolveOutputName(plan MediaPlan, options ProcessOptions) string {
 		return strings.TrimSuffix(fileName, ext) + ".mov"
 	}
 	return fileName
+}
+
+func equivalentImageExtensions(left string, right string) bool {
+	left = strings.ToLower(strings.TrimSpace(left))
+	right = strings.ToLower(strings.TrimSpace(right))
+	if left == right {
+		return true
+	}
+	return (left == ".jpg" || left == ".jpeg") && (right == ".jpg" || right == ".jpeg")
 }
 
 func joinProblem(current string, next string) string {
