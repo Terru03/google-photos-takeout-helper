@@ -133,9 +133,38 @@ func TestApplyMetadataWritesVideoArgsWithoutQuickTimeGPSCoordinates(t *testing.T
 	args := readFileString(t, argsFile)
 	requireContains(t, args, "-api QuickTimeUTC")
 	requireContains(t, args, "-Keys:CreationDate=2023:12:31 16:00:00-08:00")
+	requireContains(t, args, "-QuickTime:CreateDate=2024:01:01 00:00:00+00:00")
+	requireContains(t, args, "-TrackCreateDate=2024:01:01 00:00:00+00:00")
+	requireContains(t, args, "-MediaCreateDate=2024:01:01 00:00:00+00:00")
 	requireContains(t, args, "-XMP-exif:GPSLatitude=37.3318000")
 	if strings.Contains(args, "-Keys:GPSCoordinates=") {
 		t.Fatalf("did not expect QuickTime GPSCoordinates write in args: %s", args)
+	}
+}
+
+func TestVerifyMetadataRejectsShiftedQuickTimeCoreTime(t *testing.T) {
+	withFakeExifTool(t, map[string]string{
+		"FAKE_EXIFTOOL_JSON": `[{"CreationDate":"2024:01:01 00:00:00+00:00","CreateDate":"2023:12:31 22:00:00+00:00","TrackCreateDate":"2023:12:31 22:00:00+00:00","MediaCreateDate":"2023:12:31 22:00:00+00:00"}]`,
+	})
+
+	expected := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	err := VerifyMetadata("video.mp4", MetadataExpectation{CaptureUTC: &expected})
+	if err == nil {
+		t.Fatal("expected shifted QuickTime timestamp verification to fail")
+	}
+	requireContains(t, err.Error(), "video CreateDate mismatch")
+	requireContains(t, err.Error(), "video TrackCreateDate mismatch")
+	requireContains(t, err.Error(), "video MediaCreateDate mismatch")
+}
+
+func TestVerifyMetadataAcceptsMatchingQuickTimeCoreTime(t *testing.T) {
+	withFakeExifTool(t, map[string]string{
+		"FAKE_EXIFTOOL_JSON": `[{"CreationDate":"2024:01:01 02:00:00+02:00","CreateDate":"2024:01:01 02:00:00+02:00","TrackCreateDate":"2024:01:01 02:00:00+02:00","MediaCreateDate":"2024:01:01 02:00:00+02:00"}]`,
+	})
+
+	expected := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := VerifyMetadata("video.mp4", MetadataExpectation{CaptureUTC: &expected}); err != nil {
+		t.Fatalf("expected matching QuickTime timestamp verification to pass: %v", err)
 	}
 }
 

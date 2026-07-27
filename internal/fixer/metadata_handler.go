@@ -41,12 +41,13 @@ type imageMetadata struct {
 }
 
 type embeddedMetadata struct {
-	CaptureTime   time.Time
-	CaptureSource string
-	Offset        string
-	Title         string
-	Description   string
-	GPS           takeoutGeoData
+	CaptureTime    time.Time
+	CaptureSource  string
+	Offset         string
+	Title          string
+	Description    string
+	GPS            takeoutGeoData
+	VideoCoreTimes map[string]time.Time
 }
 
 type metadataPlan struct {
@@ -244,7 +245,28 @@ func newExifToolCommand(args ...string) (*exec.Cmd, func(), error) {
 		_ = os.Remove(argFile.Name())
 	}
 
-	return newHiddenCommand(getExifToolPath(), "-@", argFile.Name()), cleanup, nil
+	cmd := newHiddenCommand(getExifToolPath(), "-@", argFile.Name())
+	cmd.Env = exifToolCommandEnv()
+	return cmd, cleanup, nil
+}
+
+func exifToolCommandEnv() []string {
+	env := os.Environ()
+	if runtime.GOOS != "windows" {
+		return env
+	}
+
+	clean := make([]string, 0, len(env)+3)
+	for _, entry := range env {
+		key, _, found := strings.Cut(entry, "=")
+		if found && (strings.EqualFold(key, "LC_ALL") ||
+			strings.EqualFold(key, "LC_CTYPE") ||
+			strings.EqualFold(key, "LANG")) {
+			continue
+		}
+		clean = append(clean, entry)
+	}
+	return append(clean, "LC_ALL=C", "LC_CTYPE=C", "LANG=C")
 }
 
 func ApplyMetadata(filePath string, meta imageMetadata, policy ConflictPolicy) (MetadataApplyResult, error) {
@@ -266,16 +288,17 @@ func ApplyMetadata(filePath string, meta imageMetadata, policy ConflictPolicy) (
 		localValue := plan.CaptureLocal.Format("2006:01:02 15:04:05")
 		localValueWithTZ := localValue + plan.Offset
 		utcValue := plan.CaptureUTC.Format("2006:01:02 15:04:05")
+		utcValueWithTZ := utcValue + "+00:00"
 
 		if IsVideoFile(filePath) {
 			args = append(args,
 				"-Keys:CreationDate="+localValueWithTZ,
-				"-QuickTime:CreateDate="+utcValue,
-				"-QuickTime:ModifyDate="+utcValue,
-				"-TrackCreateDate="+utcValue,
-				"-TrackModifyDate="+utcValue,
-				"-MediaCreateDate="+utcValue,
-				"-MediaModifyDate="+utcValue,
+				"-QuickTime:CreateDate="+utcValueWithTZ,
+				"-QuickTime:ModifyDate="+utcValueWithTZ,
+				"-TrackCreateDate="+utcValueWithTZ,
+				"-TrackModifyDate="+utcValueWithTZ,
+				"-MediaCreateDate="+utcValueWithTZ,
+				"-MediaModifyDate="+utcValueWithTZ,
 				"-FileCreateDate="+localValueWithTZ,
 				"-FileModifyDate="+localValueWithTZ,
 			)
@@ -540,6 +563,24 @@ func ReadEmbeddedMetadata(filePath string) (embeddedMetadata, error) {
 		Longitude: toFloat(row["GPSLongitude"]),
 		Altitude:  toFloat(row["GPSAltitude"]),
 	}
+	if IsVideoFile(filePath) {
+		result.VideoCoreTimes = make(map[string]time.Time, 3)
+		for _, candidate := range []struct {
+			name  string
+			value string
+		}{
+			{"CreateDate", toString(row["CreateDate"])},
+			{"TrackCreateDate", toString(row["TrackCreateDate"])},
+			{"MediaCreateDate", toString(row["MediaCreateDate"])},
+		} {
+			if candidate.value == "" {
+				continue
+			}
+			if parsed, parseErr := parseFlexibleExifTime(candidate.value, result.Offset); parseErr == nil {
+				result.VideoCoreTimes[candidate.name] = parsed
+			}
+		}
+	}
 
 	candidates := []struct {
 		source string
@@ -595,6 +636,21 @@ func VerifyMetadata(filePath string, expected MetadataExpectation) error {
 			problems = append(problems, "capture time missing after write")
 		} else if math.Abs(actual.CaptureTime.UTC().Sub(expected.CaptureUTC.UTC()).Seconds()) > 2 {
 			problems = append(problems, fmt.Sprintf("capture time mismatch (got %s)", actual.CaptureTime.UTC().Format(time.RFC3339)))
+		}
+		if IsVideoFile(filePath) {
+			for _, name := range []string{"CreateDate", "TrackCreateDate", "MediaCreateDate"} {
+				actualTime, ok := actual.VideoCoreTimes[name]
+				if !ok {
+					continue
+				}
+				if math.Abs(actualTime.UTC().Sub(expected.CaptureUTC.UTC()).Seconds()) > 2 {
+					problems = append(problems, fmt.Sprintf(
+						"video %s mismatch (got %s)",
+						name,
+						actualTime.UTC().Format(time.RFC3339),
+					))
+				}
+			}
 		}
 	}
 

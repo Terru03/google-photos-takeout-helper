@@ -56,6 +56,7 @@ var (
 
 func startExifToolSession(path string) (*exifToolSession, error) {
 	cmd := newHiddenCommand(path, "-stay_open", "True", "-@", "-")
+	cmd.Env = exifToolCommandEnv()
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
