@@ -30,10 +30,13 @@ var videoExtensions = map[string]struct{}{
 }
 
 var yearPartRegexp = regexp.MustCompile(`^\d{4}$`)
+var yearSuffixRegexp = regexp.MustCompile(`(\d{4})$`)
+var filenameDateRegexp = regexp.MustCompile(`([12][0-9]{3})[-_.]?([01][0-9])[-_.]?([0-3][0-9])`)
 
 type folderDateSelection struct {
-	Time   time.Time
-	Source string
+	Time       time.Time
+	Source     string
+	MonthKnown bool
 }
 
 func ClearCache() {}
@@ -196,8 +199,9 @@ func DetectFileMonth(sourcePath string, sidecarPath string) (int, error) {
 func selectFolderDate(plan MediaPlan) (folderDateSelection, error) {
 	if timestamp, ok := planPhotoTakenTimestamp(plan); ok {
 		return folderDateSelection{
-			Time:   timestamp,
-			Source: "google-sidecar-photoTakenTime",
+			Time:       timestamp,
+			Source:     "google-sidecar-photoTakenTime",
+			MonthKnown: true,
 		}, nil
 	}
 
@@ -207,8 +211,26 @@ func selectFolderDate(plan MediaPlan) (folderDateSelection, error) {
 			source += ":" + embedded.CaptureSource
 		}
 		return folderDateSelection{
-			Time:   embedded.CaptureTime,
-			Source: source,
+			Time:       embedded.CaptureTime,
+			Source:     source,
+			MonthKnown: true,
+		}, nil
+	}
+
+	timelineYear, hasTimelineYear := timelineFolderYear(plan)
+	if filenameDate, ok := dateFromFilename(plan); ok && (!hasTimelineYear || filenameDate.Year() == timelineYear) {
+		return folderDateSelection{
+			Time:       filenameDate,
+			Source:     "filename-date",
+			MonthKnown: true,
+		}, nil
+	}
+
+	if hasTimelineYear {
+		return folderDateSelection{
+			Time:       time.Date(timelineYear, time.January, 1, 12, 0, 0, 0, time.UTC),
+			Source:     "google-timeline-folder-year",
+			MonthKnown: false,
 		}, nil
 	}
 
@@ -218,9 +240,82 @@ func selectFolderDate(plan MediaPlan) (folderDateSelection, error) {
 		return folderDateSelection{}, err
 	}
 	return folderDateSelection{
-		Time:   info.ModTime(),
-		Source: "file-modified",
+		Time:       info.ModTime(),
+		Source:     "file-modified",
+		MonthKnown: true,
 	}, nil
+}
+
+func timelineFolderYear(plan MediaPlan) (int, bool) {
+	dirName := strings.TrimSpace(plan.TopLevelDir)
+	if dirName == "" {
+		relativePath := filepath.ToSlash(plan.RelativePath)
+		if separator := strings.Index(relativePath, "/"); separator >= 0 {
+			dirName = relativePath[:separator]
+		}
+	}
+	if dirName == "" {
+		return 0, false
+	}
+	isYearFolder, err := IsYearFolder(dirName)
+	if err != nil || !isYearFolder {
+		return 0, false
+	}
+	match := yearSuffixRegexp.FindStringSubmatch(dirName)
+	if len(match) != 2 {
+		return 0, false
+	}
+	year, err := strconv.Atoi(match[1])
+	if err != nil {
+		return 0, false
+	}
+	return year, true
+}
+
+func dateFromFilename(plan MediaPlan) (time.Time, bool) {
+	names := []string{
+		plan.OutputName,
+		plan.FileName,
+		filepath.Base(plan.SourcePath),
+	}
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		for _, indexes := range filenameDateRegexp.FindAllStringSubmatchIndex(name, -1) {
+			if len(indexes) != 8 {
+				continue
+			}
+			start := indexes[0]
+			end := indexes[1]
+			if start > 0 && name[start-1] >= '0' && name[start-1] <= '9' {
+				continue
+			}
+			if end < len(name) && name[end] >= '0' && name[end] <= '9' {
+				continue
+			}
+
+			year, yearErr := strconv.Atoi(name[indexes[2]:indexes[3]])
+			month, monthErr := strconv.Atoi(name[indexes[4]:indexes[5]])
+			day, dayErr := strconv.Atoi(name[indexes[6]:indexes[7]])
+			if yearErr != nil || monthErr != nil || dayErr != nil {
+				continue
+			}
+			candidate := time.Date(year, time.Month(month), day, 12, 0, 0, 0, time.UTC)
+			if candidate.Year() == year && int(candidate.Month()) == month && candidate.Day() == day {
+				return candidate, true
+			}
+		}
+	}
+	return time.Time{}, false
 }
 
 func planPhotoTakenTimestamp(plan MediaPlan) (time.Time, bool) {
@@ -284,6 +379,9 @@ func resolveOutputDirWithDateSource(outputRoot string, plan MediaPlan, options P
 		return "", folderDateSelection{}, err
 	}
 	targetDir := filepath.Join(outputRoot, fmt.Sprintf("Photos from %04d", selection.Time.UTC().Year()))
+	if !selection.MonthKnown {
+		return filepath.Join(targetDir, "Unknown month"), selection, nil
+	}
 	month := int(selection.Time.UTC().Month())
 	return filepath.Join(targetDir, FormatMonthFolderName(month)), selection, nil
 }

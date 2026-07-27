@@ -116,6 +116,32 @@ func Run(ctx context.Context, options Options) (Result, error) {
 		return result, err
 	}
 
+	if len(zips) > 1 && options.ProcessOptions.SidecarIndex == nil {
+		fixer.Log(fixer.LoggerInfo, "Index Google JSON sidecars across %d ZIP files", len(zips))
+		sidecarIndex, warnings, indexErr := buildGlobalSidecarIndex(ctx, zips, func(completed int, total int, item ZipItem) {
+			emitProgress(options, BatchProgress{
+				CurrentZip:   item.Path,
+				CurrentIndex: completed,
+				Phase:        "index",
+				Completed:    completed,
+				Total:        total,
+				ReportPath:   manifest.Path(),
+			})
+		})
+		if indexErr != nil {
+			return result, indexErr
+		}
+		options.ProcessOptions.SidecarIndex = sidecarIndex
+		result.IndexedSidecars = sidecarIndex.Count()
+		result.SidecarIndexWarnings = warnings
+		fixer.Log(
+			fixer.LoggerInfo,
+			"JSON sidecar index ready: %d sidecars, %d warnings",
+			result.IndexedSidecars,
+			result.SidecarIndexWarnings,
+		)
+	}
+
 	if err := os.MkdirAll(options.OutputDir, 0o755); err != nil {
 		return result, err
 	}

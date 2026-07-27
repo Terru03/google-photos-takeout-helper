@@ -9,9 +9,10 @@ import (
 )
 
 var (
-	duplicateBeforeExtRE = regexp.MustCompile(`^(.*)\((\d+)\)(\.[^.]+)$`)
-	duplicateAfterExtRE  = regexp.MustCompile(`^(.*)(\.[^.]+)\((\d+)\)$`)
-	trailingDashDigitsRE = regexp.MustCompile(`^(.*)-(\d+)$`)
+	duplicateBeforeExtRE  = regexp.MustCompile(`^(.*)\((\d+)\)(\.[^.]+)$`)
+	duplicateAfterExtRE   = regexp.MustCompile(`^(.*)(\.[^.]+)\((\d+)\)$`)
+	trailingDashDigitsRE  = regexp.MustCompile(`^(.*)-(\d+)$`)
+	supplementalSidecarRE = regexp.MustCompile(`(?i)^(.*)\.supplemental-metadata(?:\((\d+)\))?\.json$`)
 )
 
 type folderSidecarCandidate struct {
@@ -104,6 +105,9 @@ func DiscoverMediaPlan(sourceRoot string, options ProcessOptions) ([]MediaPlan, 
 	var plans []MediaPlan
 	for _, dirKey := range dirKeys {
 		bundle := folders[dirKey]
+		if options.SidecarIndex != nil {
+			bundle.sidecars = mergeSidecarCandidates(bundle.sidecars, options.SidecarIndex.candidatesForDir(bundle.relativeDir))
+		}
 		sort.Strings(bundle.media)
 		plans = append(plans, resolveFolderPlans(sourceRoot, bundle)...)
 	}
@@ -116,6 +120,23 @@ func DiscoverMediaPlan(sourceRoot string, options ProcessOptions) ([]MediaPlan, 
 	})
 
 	return plans, nil
+}
+
+func mergeSidecarCandidates(local []folderSidecarCandidate, indexed []folderSidecarCandidate) []folderSidecarCandidate {
+	merged := append([]folderSidecarCandidate(nil), local...)
+	seenNames := make(map[string]struct{}, len(local)+len(indexed))
+	for _, candidate := range local {
+		seenNames[strings.ToLower(candidate.name)] = struct{}{}
+	}
+	for _, candidate := range indexed {
+		key := strings.ToLower(candidate.name)
+		if _, ok := seenNames[key]; ok {
+			continue
+		}
+		seenNames[key] = struct{}{}
+		merged = append(merged, candidate)
+	}
+	return merged
 }
 
 func buildSidecarCandidate(path string) folderSidecarCandidate {
@@ -283,6 +304,12 @@ func matchScore(mediaNameLower string, mediaKeys map[string]struct{}, candidate 
 		return 1200
 	}
 
+	for _, mappedName := range supplementalSidecarMediaNames(candidate.name) {
+		if strings.EqualFold(mappedName, mediaNameLower) {
+			return 1300
+		}
+	}
+
 	if candidate.title != "" && strings.EqualFold(candidate.title, mediaNameLower) {
 		return 1100
 	}
@@ -315,6 +342,28 @@ func matchScore(mediaNameLower string, mediaKeys map[string]struct{}, candidate 
 	}
 
 	return 0
+}
+
+func supplementalSidecarMediaNames(sidecarName string) []string {
+	match := supplementalSidecarRE.FindStringSubmatch(strings.TrimSpace(sidecarName))
+	if len(match) != 3 {
+		return nil
+	}
+	mediaName := match[1]
+	ordinal := match[2]
+	if ordinal == "" {
+		return []string{mediaName}
+	}
+
+	ext := filepath.Ext(mediaName)
+	if ext == "" {
+		return []string{mediaName + "(" + ordinal + ")"}
+	}
+	stem := strings.TrimSuffix(mediaName, ext)
+	return []string{
+		stem + "(" + ordinal + ")" + ext,
+		mediaName + "(" + ordinal + ")",
+	}
 }
 
 func resolvePartnerIndex(planIndex int, plans []MediaPlan, byExactStem map[string]partnerIndexBucket, byPartnerKey map[string]partnerIndexBucket) (int, bool) {

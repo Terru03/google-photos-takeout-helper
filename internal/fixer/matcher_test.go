@@ -221,6 +221,84 @@ func TestDiscoverMediaPlanMarksAmbiguousMatches(t *testing.T) {
 	}
 }
 
+func TestDiscoverMediaPlanPairsSupplementalMetadataDuplicateOrdinals(t *testing.T) {
+	root := t.TempDir()
+	albumDir := filepath.Join(root, "Photos from 2005")
+	if err := os.MkdirAll(albumDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeTestFile(t, filepath.Join(albumDir, "Copy of Sony(045).jpg"), "first")
+	writeTestFile(t, filepath.Join(albumDir, "Copy of Sony(045)(1).jpg"), "second")
+	writeTestFile(t, filepath.Join(albumDir, "Copy of Sony(045).jpg.supplemental-metadata.json"), `{"title":"Copy of Sony(045).jpg","photoTakenTime":{"timestamp":"1128010000"}}`)
+	writeTestFile(t, filepath.Join(albumDir, "Copy of Sony(045).jpg.supplemental-metadata(1).json"), `{"title":"Copy of Sony(045).jpg","photoTakenTime":{"timestamp":"1128020000"}}`)
+
+	plans, err := DiscoverMediaPlan(root, ProcessOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 2 {
+		t.Fatalf("plans = %d, want 2", len(plans))
+	}
+
+	for _, plan := range plans {
+		if plan.MatchStatus != MatchStatusMatched {
+			t.Fatalf("%s status = %s, want matched", plan.FileName, plan.MatchStatus)
+		}
+		switch plan.FileName {
+		case "Copy of Sony(045).jpg":
+			if filepath.Base(plan.SidecarPath) != "Copy of Sony(045).jpg.supplemental-metadata.json" {
+				t.Fatalf("base file got wrong sidecar %q", plan.SidecarPath)
+			}
+		case "Copy of Sony(045)(1).jpg":
+			if filepath.Base(plan.SidecarPath) != "Copy of Sony(045).jpg.supplemental-metadata(1).json" {
+				t.Fatalf("copy file got wrong sidecar %q", plan.SidecarPath)
+			}
+		default:
+			t.Fatalf("unexpected media %q", plan.FileName)
+		}
+	}
+}
+
+func TestDiscoverMediaPlanUsesSidecarIndexFromOtherZip(t *testing.T) {
+	root := t.TempDir()
+	albumDir := filepath.Join(root, "Photos from 2006")
+	if err := os.MkdirAll(albumDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(albumDir, "PIC_0008.JPG"), "image")
+
+	index := NewSidecarIndex()
+	if err := index.AddJSON(
+		filepath.Join("Photos from 2006", "PIC_0008.JPG.supplemental-metadata.json"),
+		"takeout-005.zip::Takeout/Google Photos/Photos from 2006/PIC_0008.JPG.supplemental-metadata.json",
+		[]byte(`{"title":"PIC_0008.JPG","photoTakenTime":{"timestamp":"1165449600"}}`),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	plans, err := DiscoverMediaPlan(root, ProcessOptions{SidecarIndex: index})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 1 {
+		t.Fatalf("plans = %d, want 1", len(plans))
+	}
+	if plans[0].MatchStatus != MatchStatusMatched {
+		t.Fatalf("status = %s, want matched", plans[0].MatchStatus)
+	}
+	if plans[0].Metadata == nil {
+		t.Fatal("global sidecar metadata missing")
+	}
+	timestamp, err := plans[0].Metadata.PhotoTakenTimestamp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := timestamp.UTC().Format("2006-01-02"); got != "2006-12-07" {
+		t.Fatalf("date = %s, want 2006-12-07", got)
+	}
+}
+
 func writeTestFile(t *testing.T, path string, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {

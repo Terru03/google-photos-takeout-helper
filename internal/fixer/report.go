@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -295,6 +296,9 @@ func (r *RunReport) writeReviewCSV(reportDir string) error {
 		"match_status",
 		"match_strategy",
 		"status",
+		"folder_date_source",
+		"folder_year",
+		"folder_month",
 		"output_path",
 		"sidecar_path",
 		"partner_rel_path",
@@ -313,6 +317,9 @@ func (r *RunReport) writeReviewCSV(reportDir string) error {
 			string(record.MatchStatus),
 			string(record.MatchStrategy),
 			string(record.Status),
+			record.FolderDateSource,
+			strconv.Itoa(record.FolderYear),
+			strconv.Itoa(record.FolderMonth),
 			record.OutputPath,
 			record.SidecarPath,
 			record.PartnerRelPath,

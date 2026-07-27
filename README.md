@@ -19,7 +19,7 @@ It turns messy Google Photos Takeout exports into a cleaner folder library with 
 
 ## Main Features
 
-- Match media files to Google Takeout JSON sidecars.
+- Match media files to Google Takeout JSON sidecars across all selected split ZIPs.
 - Write metadata into photos and videos with ExifTool.
 - Verify written metadata with `--verify`.
 - Deduplicate exact copies safely.
@@ -110,9 +110,11 @@ Batch ZIP mode stays sequential unless a future explicit parallel mode proves ou
 
 Batch mode defaults to timeline-only output. Timeline year and month come from:
 
-1. Google `photoTakenTime.timestamp`
+1. Google `photoTakenTime.timestamp`, indexed across all selected Takeout ZIPs
 2. embedded EXIF/XMP/media creation time
-3. file modified time
+3. a valid date in the media filename
+4. the Google timeline folder year, using `Unknown month` when no month is safe
+5. file modified time only when no Google timeline year exists
 
 Albums never name a timeline folder. `--albums-separate` writes albums below `OUTPUT\Albums\`.
 

@@ -7,7 +7,7 @@ Google Photos Takeout Helper is designed as a deterministic archive-repair tool 
 ## Pipeline
 
 1. Validate input/output paths and runtime dependencies.
-2. Discover media and JSON sidecars into a `MediaPlan`.
+2. Index JSON sidecars across every selected split ZIP, then discover media into a `MediaPlan`.
 3. Resolve matches using deterministic filename and metadata heuristics.
 4. Restore metadata to output files and/or XMP sidecars, deduplicate exact copies, and write audit state.
 5. Verify written metadata when enabled.
@@ -21,15 +21,18 @@ The matcher lives in `internal/fixer/matcher.go`.
 
 It intentionally avoids “first JSON with same prefix wins” behavior. Instead it ranks candidates in this order:
 
-1. Exact `<media>.json` name match.
-2. JSON `title` that exactly matches the media filename.
-3. Normalized name matches that account for:
+1. Exact supplemental-metadata duplicate ordinal match, such as media `(1)` to sidecar `(1)`.
+2. Exact `<media>.json` name match.
+3. JSON `title` that exactly matches the media filename.
+4. Normalized name matches that account for:
    - duplicate suffixes like `name(1).jpg` and `name.jpg(1).json`
    - edited variants like `-edited`
    - long-name truncation in Takeout JSON exports
-4. Live-photo / partner-file fallback for sibling photo/video pairs, with sidecar inheritance in either direction when only one side matches directly.
+5. Live-photo / partner-file fallback for sibling photo/video pairs, with sidecar inheritance in either direction when only one side matches directly.
 
 If multiple candidates tie at the best score, the file is marked `ambiguous` and reported instead of silently picking one.
+
+The batch-sidecar index reads only JSON entries from all selected ZIPs. This lets media in one split ZIP use Google metadata from another split ZIP without keeping every large ZIP extracted at once.
 
 Partner relationships are also recorded in the audit output even when neither side has a JSON sidecar, so live/motion-photo exports remain explainable instead of looking like unrelated misses.
 

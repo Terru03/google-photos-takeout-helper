@@ -105,21 +105,23 @@ type Options struct {
 }
 
 type Result struct {
-	ManifestPath        string
-	OutputDir           string
-	StagingOutputDir    string
-	WorkDir             string
-	WorkDirs            []string
-	ZipCount            int
-	Processed           int
-	CompletedWithReview int
-	Skipped             int
-	Planned             int
-	Failed              int
-	Stopped             bool
-	Preflight           *PreflightReport
-	AlbumCleanup        *fixer.AlbumCleanupResult
-	MotionMerge         *fixer.MotionMergeReport
+	ManifestPath         string
+	OutputDir            string
+	StagingOutputDir     string
+	WorkDir              string
+	WorkDirs             []string
+	ZipCount             int
+	Processed            int
+	CompletedWithReview  int
+	Skipped              int
+	Planned              int
+	Failed               int
+	Stopped              bool
+	IndexedSidecars      int
+	SidecarIndexWarnings int
+	Preflight            *PreflightReport
+	AlbumCleanup         *fixer.AlbumCleanupResult
+	MotionMerge          *fixer.MotionMergeReport
 }
 
 type BatchProgress struct {

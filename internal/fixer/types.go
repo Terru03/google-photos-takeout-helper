@@ -49,9 +49,10 @@ type ProcessOptions struct {
 	VerifyWrites             bool
 	ConflictPolicy           ConflictPolicy
 	Verbose                  bool
-	RuntimeRoot              string `json:"-"`
-	FinalOutputRoot          string `json:"-"`
-	SourceID                 string `json:"-"`
+	RuntimeRoot              string        `json:"-"`
+	FinalOutputRoot          string        `json:"-"`
+	SourceID                 string        `json:"-"`
+	SidecarIndex             *SidecarIndex `json:"-"`
 }
 
 func DefaultProcessOptions() ProcessOptions {
@@ -233,6 +234,9 @@ type ProcessRecord struct {
 	UsedPartnerSidecar bool                    `json:"usedPartnerSidecar,omitempty"`
 	Status             OperationStatus         `json:"status"`
 	DuplicateOf        string                  `json:"duplicateOf,omitempty"`
+	FolderDateSource   string                  `json:"folderDateSource,omitempty"`
+	FolderYear         int                     `json:"folderYear,omitempty"`
+	FolderMonth        int                     `json:"folderMonth,omitempty"`
 	MetadataWritten    bool                    `json:"metadataWritten,omitempty"`
 	MetadataVerified   bool                    `json:"metadataVerified,omitempty"`
 	UsedXMPSidecar     bool                    `json:"usedXMPSidecar,omitempty"`

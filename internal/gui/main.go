@@ -607,7 +607,9 @@ func (s *guiState) startBatchProcessing() {
 						s.batchTotal = progress.Total
 						s.batchCompleted = progress.Completed
 					}
-					if progress.Phase == "extract" {
+					if progress.Phase == "index" {
+						s.stage = "JSON index"
+					} else if progress.Phase == "extract" {
 						s.stage = "Extract"
 					} else if progress.Phase == "process" {
 						s.stage = "Metadata"

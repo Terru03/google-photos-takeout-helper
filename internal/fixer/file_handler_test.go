@@ -100,6 +100,66 @@ func TestTimelineOnlyUsesSidecarYearAndMonthNotSourceFolder(t *testing.T) {
 	}
 }
 
+func TestTimelineOnlyUsesDateInFilenameBeforeExtractedFileModifiedDate(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "Photos from 2015", "IMG-20150617-WA0005.jpg")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, sourcePath, "image")
+	extractTime := time.Date(2026, time.July, 27, 18, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(sourcePath, extractTime, extractTime); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ResolveOutputDir(filepath.Join(root, "out"), MediaPlan{
+		SourcePath:   sourcePath,
+		RelativeDir:  "Photos from 2015",
+		RelativePath: filepath.Join("Photos from 2015", "IMG-20150617-WA0005.jpg"),
+		TopLevelDir:  "Photos from 2015",
+		OutputName:   "IMG-20150617-WA0005.jpg",
+		IsYearFolder: true,
+	}, ProcessOptions{AlbumMode: AlbumModeTimelineOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := filepath.Join(root, "out", "Photos from 2015", "6 - June")
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestTimelineOnlyUsesSourceYearAndUnknownMonthInsteadOfExtractedFileModifiedDate(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "Photos from 2019", "DSC_0001.jpg")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, sourcePath, "image")
+	extractTime := time.Date(2026, time.July, 27, 18, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(sourcePath, extractTime, extractTime); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ResolveOutputDir(filepath.Join(root, "out"), MediaPlan{
+		SourcePath:   sourcePath,
+		RelativeDir:  "Photos from 2019",
+		RelativePath: filepath.Join("Photos from 2019", "DSC_0001.jpg"),
+		TopLevelDir:  "Photos from 2019",
+		OutputName:   "DSC_0001.jpg",
+		IsYearFolder: true,
+	}, ProcessOptions{AlbumMode: AlbumModeTimelineOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := filepath.Join(root, "out", "Photos from 2019", "Unknown month")
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
 func TestAlbumOutputStaysUnderAlbumsFolder(t *testing.T) {
 	root := t.TempDir()
 	sourcePath := filepath.Join(root, "Trip to Rome", "IMG_0001.jpg")

@@ -192,6 +192,13 @@ func processPlanToRoots(
 		record.Error = err.Error()
 		return record, nil
 	}
+	if dateSelection.Source != "" {
+		record.FolderDateSource = dateSelection.Source
+		record.FolderYear = dateSelection.Time.UTC().Year()
+		if dateSelection.MonthKnown {
+			record.FolderMonth = int(dateSelection.Time.UTC().Month())
+		}
+	}
 	if options.Verbose && dateSelection.Source != "" {
 		Log(
 			LoggerInfo,
@@ -332,11 +339,22 @@ func processPlanToRoots(
 
 			if err != nil {
 				record.Error = joinProblem(record.Error, fmt.Sprintf("metadata write failed: %v", err))
+				if restoreErr := DuplicateFile(plan.SourcePath, workingDestPath); restoreErr != nil {
+					record.Status = OperationError
+					record.Error = joinProblem(record.Error, fmt.Sprintf("restore source after metadata failure: %v", restoreErr))
+					return record, suspiciousDates
+				}
 			}
 
 			if options.VerifyWrites && metadataResult.MetadataWritten {
 				if err := VerifyMetadata(workingDestPath, metadataResult.MetadataPlan); err != nil {
 					record.Error = joinProblem(record.Error, fmt.Sprintf("verification failed: %v", err))
+					if restoreErr := DuplicateFile(plan.SourcePath, workingDestPath); restoreErr != nil {
+						record.Status = OperationError
+						record.Error = joinProblem(record.Error, fmt.Sprintf("restore source after verification failure: %v", restoreErr))
+						return record, suspiciousDates
+					}
+					record.MetadataWritten = false
 				} else {
 					record.MetadataVerified = true
 				}

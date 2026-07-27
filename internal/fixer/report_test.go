@@ -29,12 +29,14 @@ func TestRunReportWritesFinalProofCountsAndReviewCSV(t *testing.T) {
 		Status:        OperationCopied,
 	})
 	report.Add(ProcessRecord{
-		SourceRelPath:   filepath.ToSlash(filepath.Join("Photos from 2024", "bad.jpg")),
-		OutputPath:      filepath.Join("output", "Photos from 2024", "bad.jpg"),
-		MatchStatus:     MatchStatusAmbiguous,
-		MatchCandidates: []string{"a.json", "b.json"},
-		Status:          OperationCopied,
-		Error:           "verification failed: capture time mismatch",
+		SourceRelPath:    filepath.ToSlash(filepath.Join("Photos from 2024", "bad.jpg")),
+		OutputPath:       filepath.Join("output", "Photos from 2024", "bad.jpg"),
+		MatchStatus:      MatchStatusAmbiguous,
+		MatchCandidates:  []string{"a.json", "b.json"},
+		Status:           OperationCopied,
+		FolderDateSource: "google-timeline-folder-year",
+		FolderYear:       2024,
+		Error:            "verification failed: capture time mismatch",
 	})
 
 	runRoot := t.TempDir()
@@ -55,4 +57,5 @@ func TestRunReportWritesFinalProofCountsAndReviewCSV(t *testing.T) {
 	requireContains(t, review, "source_rel_path,match_status,match_strategy,status")
 	requireContains(t, review, "bad.jpg")
 	requireContains(t, review, "a.json|b.json")
+	requireContains(t, review, "google-timeline-folder-year,2024,0")
 }

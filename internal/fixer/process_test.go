@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -116,6 +117,54 @@ func TestProcessPlanDeduplicatesAgainstExistingState(t *testing.T) {
 	}
 	if record.DuplicateOf != canonicalOutput {
 		t.Fatalf("expected duplicate to reference canonical output %q, got %q", canonicalOutput, record.DuplicateOf)
+	}
+}
+
+func TestProcessPlanRestoresOriginalBytesWhenMetadataWriteFails(t *testing.T) {
+	root := t.TempDir()
+	outputRoot := filepath.Join(root, "output")
+	sourcePath := filepath.Join(root, "Photos from 2024", "IMG_0001.jpg")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, sourcePath, "clean-original")
+
+	outputPath := filepath.Join(outputRoot, "Photos from 2024", "IMG_0001.jpg")
+	withFakeExifTool(t, map[string]string{
+		"FAKE_EXIFTOOL_MUTATE_FILE": outputPath,
+		"FAKE_EXIFTOOL_EXIT_CODE":   "7",
+	})
+
+	stateStore, err := OpenStateStore(filepath.Join(outputRoot, ".gtf", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if closeErr := stateStore.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+	})
+
+	metadata := imageMetadata{Title: "Real title"}
+	record, _ := processPlan(outputRoot, MediaPlan{
+		SourcePath:   sourcePath,
+		RelativePath: filepath.Join("Photos from 2024", "IMG_0001.jpg"),
+		RelativeDir:  "Photos from 2024",
+		TopLevelDir:  "Photos from 2024",
+		OutputName:   "IMG_0001.jpg",
+		IsYearFolder: true,
+		MatchStatus:  MatchStatusMatched,
+		Metadata:     &metadata,
+	}, ProcessOptions{WriteMetadata: true}, stateStore)
+
+	if record.Status != OperationCopiedWithoutMeta {
+		t.Fatalf("status = %s, want %s", record.Status, OperationCopiedWithoutMeta)
+	}
+	if !strings.Contains(record.Error, "metadata write failed") {
+		t.Fatalf("missing metadata error: %q", record.Error)
+	}
+	if got := readFileString(t, outputPath); got != "clean-original" {
+		t.Fatalf("failed metadata write changed output bytes: %q", got)
 	}
 }
 

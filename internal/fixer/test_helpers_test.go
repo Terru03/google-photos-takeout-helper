@@ -46,8 +46,12 @@ if defined FAKE_EXIFTOOL_ARGS_FILE (
 echo !ARGS! | findstr /c:"-j" >nul
 if not errorlevel 1 (
   echo %FAKE_EXIFTOOL_JSON%
+  exit /b 0
 )
-exit /b 0
+if defined FAKE_EXIFTOOL_MUTATE_FILE (
+  >> "%FAKE_EXIFTOOL_MUTATE_FILE%" echo MUTATED
+)
+exit /b %FAKE_EXIFTOOL_EXIT_CODE%
 `
 	} else {
 		path = filepath.Join(dir, "fake-exiftool")
@@ -81,9 +85,13 @@ fi
 case " $args " in
   *" -j "*)
     printf '%s\n' "${FAKE_EXIFTOOL_JSON}"
+    exit 0
     ;;
 esac
-exit 0
+if [ -n "${FAKE_EXIFTOOL_MUTATE_FILE}" ]; then
+  printf '%s\n' "MUTATED" >> "${FAKE_EXIFTOOL_MUTATE_FILE}"
+fi
+exit "${FAKE_EXIFTOOL_EXIT_CODE}"
 `
 	}
 
@@ -101,6 +109,7 @@ exit 0
 		"FAKE_EXIFTOOL_VERSION":    "12.70",
 		"FAKE_EXIFTOOL_MAJORBRAND": "",
 		"FAKE_EXIFTOOL_JSON":       "[]",
+		"FAKE_EXIFTOOL_EXIT_CODE":  "0",
 	}
 	for key, value := range defaultEnv {
 		t.Setenv(key, value)
