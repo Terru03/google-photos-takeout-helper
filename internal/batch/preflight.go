@@ -74,7 +74,10 @@ func Preflight(options Options) (PreflightReport, error) {
 		report.MotionPhotoToolFound = true
 		report.MotionPhotoToolPath = motionPath
 	} else if report.MotionMergeEnabled {
-		return report, motionErr
+		report.Warnings = append(report.Warnings, fmt.Sprintf(
+			"motion merge is on, but MotionPhoto2 was not found; phase 1 can still run, then add the tool and run the merge pass later: %v",
+			motionErr,
+		))
 	}
 	for _, item := range zips {
 		report.TotalZipSize += item.SizeBytes

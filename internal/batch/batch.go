@@ -220,11 +220,6 @@ func validateProcessingDependencies(options Options) error {
 	if _, err := fixer.ValidateProcessingDependencies(options.ProcessOptions); err != nil {
 		return err
 	}
-	if options.ProcessOptions.Normalized().CreateMotionPhotos {
-		if _, err := fixer.ResolveMotionPhotoTool(options.MotionToolPath); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 

@@ -260,15 +260,6 @@ func Main() {
 	} else if exifInfo != nil {
 		fmt.Printf("Using ExifTool %s from %s\n", exifInfo.Version, exifInfo.Path)
 	}
-	if options.CreateMotionPhotos {
-		motionPath, err := fixer.ResolveMotionPhotoTool(*motionPhotoTool)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("Using MotionPhoto2 from %s\n", motionPath)
-	}
-
 	errCh := make(chan error, 1)
 	fixer.SafeGo("cli-process", func() {
 		errCh <- fixer.Process(context.Background(), *inputPath, *outputPath, progressCh, options)
@@ -374,14 +365,6 @@ func runBatchZIPMode(options batch.Options) {
 			os.Exit(1)
 		} else if exifInfo != nil {
 			fmt.Printf("Using ExifTool %s from %s\n", exifInfo.Version, exifInfo.Path)
-		}
-		if options.ProcessOptions.CreateMotionPhotos {
-			motionPath, err := fixer.ResolveMotionPhotoTool(options.MotionToolPath)
-			if err != nil {
-				fmt.Printf("Error: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Printf("Using MotionPhoto2 from %s\n", motionPath)
 		}
 	}
 

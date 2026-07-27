@@ -464,10 +464,6 @@ func (s *guiState) runPreflight() {
 		s.setError(err.Error())
 		return
 	}
-	if _, err := fixer.ValidateMotionPhotoDependencies(s.currentOptions()); err != nil {
-		s.setError(err.Error())
-		return
-	}
 	s.folderEstimate = count
 	s.refreshTabs(1)
 }
@@ -489,11 +485,6 @@ func (s *guiState) startFolderProcessing() {
 		s.setError(err.Error())
 		return
 	}
-	if _, err := fixer.ValidateMotionPhotoDependencies(s.currentOptions()); err != nil {
-		s.setError(err.Error())
-		return
-	}
-
 	s.progressPhase = progressProcessing
 	s.latestError = ""
 	s.currentZip = "Extracted folder"

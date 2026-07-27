@@ -124,7 +124,7 @@ func TestManifestDoesNotSilentlySkipOlderWorkflow(t *testing.T) {
 	}
 }
 
-func TestPreflightValidatesMotionPhotoDependency(t *testing.T) {
+func TestPreflightWarnsWhenMotionPhotoToolIsMissing(t *testing.T) {
 	root := t.TempDir()
 	zipRoot := filepath.Join(root, "zips")
 	work := filepath.Join(root, "work")
@@ -151,7 +151,7 @@ func TestPreflightValidatesMotionPhotoDependency(t *testing.T) {
 	})
 	t.Setenv("PATH", "")
 
-	_, err = Preflight(Options{
+	report, err := Preflight(Options{
 		ZipRoots:          []string{zipRoot},
 		WorkDir:           work,
 		OutputDir:         output,
@@ -160,11 +160,21 @@ func TestPreflightValidatesMotionPhotoDependency(t *testing.T) {
 			CreateMotionPhotos: true,
 		},
 	})
-	if err == nil {
-		t.Fatal("expected missing MotionPhoto2 to fail preflight")
+	if err != nil {
+		t.Fatalf("phase 1 preflight must not fail without MotionPhoto2: %v", err)
 	}
-	if !strings.Contains(err.Error(), "MotionPhoto2") {
-		t.Fatalf("expected MotionPhoto2 error, got %v", err)
+	if report.MotionPhotoToolFound {
+		t.Fatal("missing MotionPhoto2 reported as found")
+	}
+	motionWarningFound := false
+	for _, warning := range report.Warnings {
+		if strings.Contains(warning, "MotionPhoto2") {
+			motionWarningFound = true
+			break
+		}
+	}
+	if !motionWarningFound {
+		t.Fatalf("expected MotionPhoto2 warning, got %#v", report.Warnings)
 	}
 	assertNoTempDirs(t, work)
 }
@@ -516,6 +526,52 @@ func TestRunNeverDeletesZipFile(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("expected temp work folder to be cleaned, found %d entries", len(entries))
 	}
+}
+
+func TestRunFinishesPhaseOneBeforeMissingMotionToolError(t *testing.T) {
+	root := t.TempDir()
+	zipRoot := filepath.Join(root, "zips")
+	work := filepath.Join(root, "work")
+	output := filepath.Join(root, "output")
+	for _, dir := range []string{zipRoot, work} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestZip(t, filepath.Join(zipRoot, "takeout-001.zip"), map[string]string{
+		"Takeout/Google Photos/Photos from 2024/IMG_0001.jpg": "image",
+	})
+
+	called := 0
+	result, err := Run(context.Background(), Options{
+		ZipRoots:          []string{zipRoot},
+		WorkDir:           work,
+		OutputDir:         output,
+		MotionToolPath:    filepath.Join(root, "missing-motionphoto2.exe"),
+		SafetyMarginBytes: 1,
+		ProcessOptions: fixer.ProcessOptions{
+			CreateMotionPhotos:  true,
+			WriteMetadata:       false,
+			VerifyWrites:        false,
+			RestoreMOVExtension: false,
+		},
+		Process: func(_ context.Context, _ string, outputPath string, progressCh chan<- fixer.Progress, processOptions fixer.ProcessOptions) error {
+			defer close(progressCh)
+			called++
+			if processOptions.CreateMotionPhotos {
+				t.Fatal("phase 1 received motion merge option")
+			}
+			writeCleanReport(t, outputPath)
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "MotionPhoto2") {
+		t.Fatalf("expected missing motion tool after phase 1, got %v", err)
+	}
+	if called != 1 || result.Processed != 1 || result.Failed != 0 {
+		t.Fatalf("phase 1 did not finish cleanly: calls=%d result=%#v", called, result)
+	}
+	assertNoTempDirs(t, work)
 }
 
 func TestResolveWorkDirsDoesNotDuplicateLegacyWorkDir(t *testing.T) {

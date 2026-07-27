@@ -186,19 +186,17 @@ func (s *guiState) buildErrorScreen() fyne.CanvasObject {
 	if message == "" {
 		message = "Unknown error."
 	}
-	return container.NewVBox(
+	items := []fyne.CanvasObject{
 		sectionTitle("Preflight cannot start"),
 		errorBanner(message),
-		errorBanner("No ZIP files found in the selected source folders. Make sure the folders contain files named takeout-*.zip."),
-		errorBanner("Not enough space on output drive. Free up space or choose a different output folder."),
-		errorBanner("ExifTool not found. Embed metadata requires ExifTool. Install it or uncheck that option in Options."),
-		separator(),
-		container.NewGridWithColumns(2,
-			emptyCard("No ZIP sources added", "Add a folder or ZIP file above to get started."),
-			emptyCard("No reports yet", "Run a job to generate a report."),
-		),
-		infoBanner("Previous session found. Resume from where you left off, or start over from scratch."),
-		container.NewHBox(
+		infoBanner("No source ZIP was changed. Fix error above, then run preflight again."),
+	}
+	actions := []fyne.CanvasObject{
+		secondaryButton("Back to setup", func() { s.refreshTabs(0) }),
+	}
+	if s.resumeFound() {
+		items = append(items, infoBanner("Previous session found. Resume from last safe ZIP, or reprocess selected ZIPs."))
+		actions = append([]fyne.CanvasObject{
 			secondaryButton("Resume", func() {
 				s.reprocess = false
 				s.startProcessing()
@@ -207,9 +205,10 @@ func (s *guiState) buildErrorScreen() fyne.CanvasObject {
 				s.reprocess = true
 				s.startProcessing()
 			}),
-			secondaryButton("Back to setup", func() { s.refreshTabs(0) }),
-		),
-	)
+		}, actions...)
+	}
+	items = append(items, container.NewHBox(actions...))
+	return container.NewVBox(items...)
 }
 
 func (s *guiState) buildEmptyProgressScreen() fyne.CanvasObject {
