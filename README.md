@@ -13,6 +13,7 @@ It turns messy Google Photos Takeout exports into a cleaner folder library with 
 - Original ZIP files are never moved, modified, or deleted.
 - Output is written only to `--output`.
 - Temporary extraction happens only under the selected work folder or work pool.
+- Optional SSD staging writes one ZIP to fast storage, then commits it to final output.
 - Batch ZIP mode processes one ZIP at a time by default.
 - Review items stay in reports instead of being hidden.
 
@@ -25,6 +26,7 @@ It turns messy Google Photos Takeout exports into a cleaner folder library with 
 - Restore `.MOV` extensions when embedded metadata says QuickTime.
 - Report unmatched, ambiguous, suspicious date, conflict, and metadata write/verify records.
 - Resume huge Takeout ZIP batches from `OUTPUT\.gtf\batch\manifest.jsonl`.
+- Run motion-photo merge once, after ZIP work, with timeout and resume.
 
 ## Install
 
@@ -78,6 +80,18 @@ Multiple work folders:
 .\GoogleTakeoutFixer.exe --batch-zips --zip-root "D:\Takeout Zips" --work "C:\Takeout_Incoming" --work "E:\Takeout_Incoming" --output "B:\Google_Photos_Final" --verify
 ```
 
+SSD staging output:
+
+```powershell
+.\GoogleTakeoutFixer.exe --batch-zips --zip-root "D:\Takeout Zips" --work "C:\Takeout_Work" --staging-output "C:\Takeout_Staging" --output "B:\Google_Photos_Final" --timeline-only --verify
+```
+
+One ZIP debug run:
+
+```powershell
+.\GoogleTakeoutFixer.exe --one-zip "D:\Takeout Zips\takeout-20260624T210653Z-3-001.zip" --work "C:\Takeout_Work" --staging-output "C:\Takeout_Staging" --output "B:\Google_Photos_Final" --timeline-only --verify
+```
+
 Alternate work pool syntax:
 
 ```powershell
@@ -90,9 +104,39 @@ Preflight only:
 .\GoogleTakeoutFixer.exe --batch-zips --preflight-only --zip-root "D:\Takeout Zips" --work "C:\Takeout_Incoming" --work "E:\Takeout_Incoming" --output "B:\Google_Photos_Final"
 ```
 
-Multiple work folders help with free space and may help speed if one work folder is on a fast SSD/NVMe. They do not change where fixed photos go. Final output still goes only to `--output`.
+Multiple work folders help with free space. `--staging-output` gives the larger speed gain when final output is an HDD: metadata work runs on SSD, then completed files commit to `--output`.
 
 Batch ZIP mode stays sequential unless a future explicit parallel mode proves output state, manifest writes, reports, duplicate handling, and file conflicts are safe.
+
+Batch mode defaults to timeline-only output. Timeline year and month come from:
+
+1. Google `photoTakenTime.timestamp`
+2. embedded EXIF/XMP/media creation time
+3. file modified time
+
+Albums never name a timeline folder. `--albums-separate` writes albums below `OUTPUT\Albums\`.
+
+## Motion Photo Merge Pass
+
+Phase 1 keeps both still images and companion `.MOV`/`.MP4` files. It never calls MotionPhoto2.
+
+After all ZIPs finish, run:
+
+```powershell
+.\GoogleTakeoutFixer.exe --merge-motion-pass --library "B:\Google_Photos_Final" --motionphoto2 "C:\Tools\motionphoto2.exe"
+```
+
+Each pair has a two-minute default timeout. One bad pair does not stop the pass. Successful pairs skip on rerun. Retry failed or timed-out pairs with:
+
+```powershell
+.\GoogleTakeoutFixer.exe --merge-motion-pass --library "B:\Google_Photos_Final" --motionphoto2 "C:\Tools\motionphoto2.exe" --retry-failed-motion
+```
+
+Report:
+
+```text
+OUTPUT\.gtf\reports\motion-merge-report.json
+```
 
 ## Batch Status
 
@@ -149,6 +193,7 @@ Runtime files are under `OUTPUT\.gtf\`:
 - `reports\latest.json`: machine-readable report
 - `reports\suspicious_dates.csv`: suspicious date rows
 - `logs\*.txt`: run logs
+- `reports\motion-merge-report.json`: separate motion merge results
 
 ## Development
 

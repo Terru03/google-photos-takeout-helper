@@ -8,17 +8,18 @@ import (
 )
 
 const (
-	statusPending         = "pending"
-	statusExtracting      = "extracting"
-	statusProcessing      = "processing"
-	statusCompleted       = "completed"
-	statusCompletedReview = "completed_with_review"
-	statusFailed          = "failed"
-	statusInterrupted     = "interrupted"
-	defaultOutputSubdir   = "Google_Photos_Final"
-	defaultWorkSubdir     = "GTF_Work"
-	defaultMarginBytes    = int64(25 * 1024 * 1024 * 1024)
-	takeoutZipNameNeedle  = "takeout"
+	statusPending          = "pending"
+	statusExtracting       = "extracting"
+	statusProcessing       = "processing"
+	statusCompleted        = "completed"
+	statusCompletedReview  = "completed_with_review"
+	statusFailed           = "failed"
+	statusInterrupted      = "interrupted"
+	defaultOutputSubdir    = "Google_Photos_Final"
+	defaultWorkSubdir      = "GTF_Work"
+	defaultMarginBytes     = int64(25 * 1024 * 1024 * 1024)
+	takeoutZipNameNeedle   = "takeout"
+	currentWorkflowVersion = 2
 )
 
 type DriveKind string
@@ -51,6 +52,7 @@ type ZipItem struct {
 }
 
 type ManifestEntry struct {
+	WorkflowVersion  int                     `json:"workflowVersion,omitempty"`
 	ZipName          string                  `json:"zipName"`
 	ZipPath          string                  `json:"zipPath"`
 	ZipSize          int64                   `json:"zipSize"`
@@ -64,6 +66,7 @@ type ManifestEntry struct {
 	WorkRoot         string                  `json:"workRoot,omitempty"`
 	ExtractedRoot    string                  `json:"extractedRoot,omitempty"`
 	GooglePhotosRoot string                  `json:"googlePhotosRoot,omitempty"`
+	StagingRoot      string                  `json:"stagingRoot,omitempty"`
 	OutputFolder     string                  `json:"outputFolder"`
 	Error            string                  `json:"error,omitempty"`
 	Summary          *fixer.RunReportSummary `json:"summary,omitempty"`
@@ -80,26 +83,31 @@ type ProcessFunc func(
 ) error
 
 type Options struct {
-	ZipRoots          []string
-	WorkDir           string
-	WorkDirs          []string
-	OutputDir         string
-	AutoDrives        bool
-	AskOnAmbiguous    bool
-	KeepTempOnError   bool
-	PreflightOnly     bool
-	Reprocess         bool
-	SafetyMarginBytes int64
-	ProcessOptions    fixer.ProcessOptions
-	Prompt            PromptFunc
-	Process           ProcessFunc
-	Progress          func(BatchProgress)
-	StopAfterCurrent  func() bool
+	ZipRoots           []string
+	WorkDir            string
+	WorkDirs           []string
+	OutputDir          string
+	StagingOutputDir   string
+	MotionToolPath     string
+	RetryFailedMotion  bool
+	MotionMergeTimeout time.Duration
+	AutoDrives         bool
+	AskOnAmbiguous     bool
+	KeepTempOnError    bool
+	PreflightOnly      bool
+	Reprocess          bool
+	SafetyMarginBytes  int64
+	ProcessOptions     fixer.ProcessOptions
+	Prompt             PromptFunc
+	Process            ProcessFunc
+	Progress           func(BatchProgress)
+	StopAfterCurrent   func() bool
 }
 
 type Result struct {
 	ManifestPath        string
 	OutputDir           string
+	StagingOutputDir    string
 	WorkDir             string
 	WorkDirs            []string
 	ZipCount            int
@@ -111,6 +119,7 @@ type Result struct {
 	Stopped             bool
 	Preflight           *PreflightReport
 	AlbumCleanup        *fixer.AlbumCleanupResult
+	MotionMerge         *fixer.MotionMergeReport
 }
 
 type BatchProgress struct {
@@ -144,9 +153,11 @@ type PreflightReport struct {
 	TotalZipSize          int64            `json:"totalZipSize"`
 	LargestZipBytes       int64            `json:"largestZipBytes"`
 	OutputFreeBytes       int64            `json:"outputFreeBytes"`
+	StagingFreeBytes      int64            `json:"stagingFreeBytes,omitempty"`
 	WorkFreeBytes         int64            `json:"workFreeBytes"`
 	EstimatedMinWorkBytes int64            `json:"estimatedMinWorkBytes"`
 	OutputDir             string           `json:"outputDir"`
+	StagingOutputDir      string           `json:"stagingOutputDir,omitempty"`
 	WorkDir               string           `json:"workDir"`
 	ZipRoots              []string         `json:"zipRoots"`
 	WorkDirs              []string         `json:"workDirs"`
@@ -155,4 +166,8 @@ type PreflightReport struct {
 	StatePath             string           `json:"statePath"`
 	Warnings              []string         `json:"warnings,omitempty"`
 	ZipPaths              []string         `json:"zipPaths"`
+	MotionMergeEnabled    bool             `json:"motionMergeEnabled"`
+	MotionPhotoToolFound  bool             `json:"motionPhotoToolFound"`
+	MotionPhotoToolPath   string           `json:"motionPhotoToolPath,omitempty"`
+	LegacyCompletedZips   int              `json:"legacyCompletedZips,omitempty"`
 }

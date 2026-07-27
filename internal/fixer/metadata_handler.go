@@ -41,11 +41,12 @@ type imageMetadata struct {
 }
 
 type embeddedMetadata struct {
-	CaptureTime time.Time
-	Offset      string
-	Title       string
-	Description string
-	GPS         takeoutGeoData
+	CaptureTime   time.Time
+	CaptureSource string
+	Offset        string
+	Title         string
+	Description   string
+	GPS           takeoutGeoData
 }
 
 type metadataPlan struct {
@@ -96,17 +97,29 @@ func (m imageMetadata) BestTimestamp() (time.Time, error) {
 		strings.TrimSpace(m.PhotoTakenTime.Timestamp),
 		strings.TrimSpace(m.CreationTime.Timestamp),
 	} {
-		if candidate == "" {
-			continue
-		}
-		timestampInt, err := strconv.ParseInt(candidate, 10, 64)
+		timestamp, err := parseTakeoutUnixTimestamp(candidate)
 		if err != nil {
 			continue
 		}
-		return time.Unix(timestampInt, 0).UTC(), nil
+		return timestamp, nil
 	}
 
 	return time.Time{}, fmt.Errorf("takeout JSON has no usable timestamp")
+}
+
+func (m imageMetadata) PhotoTakenTimestamp() (time.Time, error) {
+	return parseTakeoutUnixTimestamp(strings.TrimSpace(m.PhotoTakenTime.Timestamp))
+}
+
+func parseTakeoutUnixTimestamp(candidate string) (time.Time, error) {
+	if strings.TrimSpace(candidate) == "" {
+		return time.Time{}, fmt.Errorf("empty takeout timestamp")
+	}
+	timestampInt, err := strconv.ParseInt(strings.TrimSpace(candidate), 10, 64)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Unix(timestampInt, 0).UTC(), nil
 }
 
 func ReadJSONMetadata(jsonPath string) (imageMetadata, error) {
@@ -149,13 +162,50 @@ func getExifToolPath() string {
 }
 
 func InitializeExifTool() error {
-	_, err := DetectExifTool()
-	return err
+	info, err := DetectExifTool()
+	if err != nil {
+		return err
+	}
+
+	exifSessionMu.Lock()
+	defer exifSessionMu.Unlock()
+	if exifSession != nil {
+		return nil
+	}
+
+	// Test tool may not know stay-open mode.
+	// Real ExifTool stays up for whole run.
+	if strings.TrimSpace(exifToolPathOverride) != "" {
+		return nil
+	}
+	session, err := startExifToolSession(info.Path)
+	if err != nil {
+		return fmt.Errorf("start persistent ExifTool session: %w", err)
+	}
+	exifSession = session
+	return nil
 }
 
-func CloseExifTool() {}
+func CloseExifTool() {
+	exifSessionMu.Lock()
+	session := exifSession
+	exifSession = nil
+	exifSessionMu.Unlock()
+	if session != nil {
+		if err := session.Close(); err != nil {
+			Log(LoggerWarn, "Close ExifTool session: %v", err)
+		}
+	}
+}
 
 func runExifTool(args ...string) ([]byte, error) {
+	if session := activeExifToolSession(); session != nil {
+		return session.Run(args...)
+	}
+	return runExifToolOnce(args...)
+}
+
+func runExifToolOnce(args ...string) ([]byte, error) {
 	cmd, cleanup, err := newExifToolCommand(args...)
 	if err != nil {
 		return nil, err
@@ -440,7 +490,13 @@ func ReadEmbeddedMetadata(filePath string) (embeddedMetadata, error) {
 		"-api", "QuickTimeUTC",
 		"-charset", "filename=utf8",
 		"-DateTimeOriginal",
+		"-EXIF:DateTimeOriginal",
 		"-CreateDate",
+		"-EXIF:CreateDate",
+		"-XMP:CreateDate",
+		"-XMP-xmp:CreateDate",
+		"-DateCreated",
+		"-Photoshop:DateCreated",
 		"-QuickTime:CreateDate",
 		"-TrackCreateDate",
 		"-MediaCreateDate",
@@ -485,18 +541,42 @@ func ReadEmbeddedMetadata(filePath string) (embeddedMetadata, error) {
 		Altitude:  toFloat(row["GPSAltitude"]),
 	}
 
-	rawTime := firstNonEmptyString(
-		toString(row["DateTimeOriginal"]),
-		toString(row["CreationDate"]),
-		toString(row["Keys:CreationDate"]),
-		toString(row["CreateDate"]),
-		toString(row["QuickTime:CreateDate"]),
-		toString(row["TrackCreateDate"]),
-		toString(row["MediaCreateDate"]),
-	)
-	if rawTime != "" {
-		if parsed, err := parseFlexibleExifTime(rawTime, result.Offset); err == nil {
+	candidates := []struct {
+		source string
+		value  string
+	}{
+		{"DateTimeOriginal", firstNonEmptyString(toString(row["DateTimeOriginal"]), toString(row["EXIF:DateTimeOriginal"]))},
+		{"CreateDate", firstNonEmptyString(toString(row["CreateDate"]), toString(row["EXIF:CreateDate"]))},
+		{"XMP:CreateDate", firstNonEmptyString(toString(row["XMP:CreateDate"]), toString(row["XMP-xmp:CreateDate"]))},
+		{"Photoshop:DateCreated", firstNonEmptyString(toString(row["Photoshop:DateCreated"]), toString(row["DateCreated"]))},
+		{"CreationDate", firstNonEmptyString(toString(row["CreationDate"]), toString(row["Keys:CreationDate"]))},
+		{"QuickTime:CreateDate", toString(row["QuickTime:CreateDate"])},
+		{"TrackCreateDate", toString(row["TrackCreateDate"])},
+		{"MediaCreateDate", toString(row["MediaCreateDate"])},
+	}
+	if IsVideoFile(filePath) {
+		candidates = []struct {
+			source string
+			value  string
+		}{
+			{"DateTimeOriginal", firstNonEmptyString(toString(row["DateTimeOriginal"]), toString(row["EXIF:DateTimeOriginal"]))},
+			{"CreationDate", firstNonEmptyString(toString(row["CreationDate"]), toString(row["Keys:CreationDate"]))},
+			{"CreateDate", firstNonEmptyString(toString(row["CreateDate"]), toString(row["EXIF:CreateDate"]))},
+			{"XMP:CreateDate", firstNonEmptyString(toString(row["XMP:CreateDate"]), toString(row["XMP-xmp:CreateDate"]))},
+			{"Photoshop:DateCreated", firstNonEmptyString(toString(row["Photoshop:DateCreated"]), toString(row["DateCreated"]))},
+			{"QuickTime:CreateDate", toString(row["QuickTime:CreateDate"])},
+			{"TrackCreateDate", toString(row["TrackCreateDate"])},
+			{"MediaCreateDate", toString(row["MediaCreateDate"])},
+		}
+	}
+	for _, candidate := range candidates {
+		if candidate.value == "" {
+			continue
+		}
+		if parsed, err := parseFlexibleExifTime(candidate.value, result.Offset); err == nil {
 			result.CaptureTime = parsed
+			result.CaptureSource = candidate.source
+			break
 		}
 	}
 

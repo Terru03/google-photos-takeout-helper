@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Terru03/google-photos-takeout-helper/internal/batch"
 	"github.com/Terru03/google-photos-takeout-helper/internal/fixer"
@@ -59,11 +60,13 @@ func Main() {
 	inputPath := flag.String("input", "", "Path to Google takeout directory")
 	outputPath := flag.String("output", "", "Path to output directory")
 	batchZips := flag.Bool("batch-zips", false, "Process huge Google Takeout ZIP exports one ZIP at a time")
+	oneZip := flag.String("one-zip", "", "Process one Takeout ZIP for a debug or test run")
 	var zipRoots stringListFlag
 	flag.Var(&zipRoots, "zip-root", "Path to a Takeout ZIP file or folder containing Takeout ZIP files; may be repeated")
 	var workPaths stringListFlag
 	flag.Var(&workPaths, "work", "Temporary work folder used for extracting one ZIP at a time; may be repeated")
 	workPool := flag.String("work-pool", "", "Semicolon-separated temporary work folders used when repeated --work flags are not convenient")
+	stagingOutput := flag.String("staging-output", "", "SSD folder for this ZIP output before commit to final output")
 	autoDrives := flag.Bool("auto-drives", false, "Scan Windows drives and choose safe defaults where clear")
 	askOnAmbiguous := flag.Bool("ask-on-ambiguous", false, "Ask before choosing ambiguous drives or continuing after a problem report")
 	keepTempOnError := flag.Bool("keep-temp-on-error", false, "Keep temporary extracted files when a ZIP fails or needs review")
@@ -72,6 +75,8 @@ func Main() {
 	reprocessBatch := flag.Bool("reprocess", false, "Reprocess ZIPs even if the batch manifest already marks them successful")
 	profileValue := flag.String("profile", "", "Output profile: recommended-safe, audit-only, immich")
 	albumModeValue := flag.String("album-mode", "", "Album output mode: unique-only, timeline-only, all")
+	timelineOnly := flag.Bool("timeline-only", false, "Build main timeline only from Date Taken")
+	albumsSeparate := flag.Bool("albums-separate", false, "Keep albums under output\\Albums")
 	useSymlinks := flag.Bool("symlink", false, "Use symlinks inside of albums instead of duplicating images")
 	skipMetadata := flag.Bool("skip-metadata", !defaults.WriteMetadata, "Skip writing metadata to files")
 	metadataModeValue := flag.String("metadata-mode", "", "Metadata output mode: file, xmp, both, none")
@@ -79,12 +84,19 @@ func Main() {
 	monthSubfolders := flag.Bool("month-subfolders", false, "Create month subfolders like \"1 - January\" inside year folders")
 	flatten := flag.Bool("flatten", false, "Put all media files directly in the output folder without year/album subfolders")
 	createMotionPhotos := flag.Bool("motion-photos", false, "Create Windows-viewable Samsung/Google Motion Photos with MotionPhoto2 after processing")
+	mergeMotionPass := flag.Bool("merge-motion-pass", false, "Run only motion photo merge on finished library")
+	libraryPath := flag.String("library", "", "Finished library path for --merge-motion-pass")
+	motionPhotoTool := flag.String("motionphoto2", "", "Path to motionphoto2 executable")
+	retryFailedMotion := flag.Bool("retry-failed-motion", false, "Retry failed and timed-out motion photo pairs")
+	motionMergeTimeout := flag.Duration("motion-merge-timeout", 2*time.Minute, "Timeout for one motion photo pair")
 	deleteSource := flag.Bool("delete-source", false, "Delete the original input folder after a fully clean run with zero unmatched, ambiguous, or error records")
 	restoreMOV := flag.Bool("restore-mov", defaults.RestoreMOVExtension, "Restore .MOV file extension in case the Major Brand EXIF field says \"Apple QuickTime (.MOV/QT)\"")
 	dryRun := flag.Bool("dry-run", false, "Plan the run and generate an audit report without writing files")
 	verifyWrites := flag.Bool("verify", defaults.VerifyWrites, "Verify written metadata by reading it back with ExifTool")
 	noDeduplicate := flag.Bool("no-deduplicate", !defaults.Deduplicate, "Keep duplicate files instead of linking or reusing exact matches")
 	conflictPolicyValue := flag.String("conflict-policy", string(defaults.ConflictPolicy), "How to handle conflicts between embedded metadata and Takeout JSON: prefer-json, prefer-embedded, merge")
+	verbose := flag.Bool("verbose", false, "Write per-file diagnostic logs, including selected date source")
+	debug := flag.Bool("debug", false, "Alias for --verbose")
 
 	flag.Parse()
 	keepLiveVideoProvided := boolFlagProvided("keep-live-video")
@@ -92,6 +104,10 @@ func Main() {
 	if *showVersion {
 		fmt.Println(version.Tag)
 		return
+	}
+	if *timelineOnly && *albumsSeparate {
+		fmt.Println("Error: --timeline-only and --albums-separate cannot be used together")
+		os.Exit(1)
 	}
 
 	if *flatten && *useSymlinks {
@@ -133,6 +149,7 @@ func Main() {
 		DryRun:                   *dryRun,
 		VerifyWrites:             *verifyWrites,
 		ConflictPolicy:           conflictPolicy,
+		Verbose:                  *verbose || *debug,
 	}
 	if strings.TrimSpace(*profileValue) != "" {
 		if err := applyOutputProfile(*profileValue, &options); err != nil {
@@ -149,6 +166,14 @@ func Main() {
 		options.AlbumMode = mode
 	} else if *ignoreAlbums {
 		options.AlbumMode = fixer.AlbumModeTimelineOnly
+	}
+	if *timelineOnly {
+		options.AlbumMode = fixer.AlbumModeTimelineOnly
+		options.MonthSubfolders = true
+	}
+	if *albumsSeparate {
+		options.AlbumMode = fixer.AlbumModeAll
+		options.MonthSubfolders = true
 	}
 	if strings.TrimSpace(*metadataModeValue) != "" {
 		mode, err := fixer.ParseMetadataOutputMode(strings.ToLower(strings.TrimSpace(*metadataModeValue)))
@@ -168,23 +193,51 @@ func Main() {
 		os.Exit(1)
 	}
 
+	if *mergeMotionPass {
+		library := strings.TrimSpace(*libraryPath)
+		if library == "" {
+			library = strings.TrimSpace(*inputPath)
+		}
+		if library == "" {
+			library = strings.TrimSpace(*outputPath)
+		}
+		if library == "" {
+			fmt.Println("Error: --library is required for --merge-motion-pass")
+			os.Exit(1)
+		}
+		runMotionMergeMode(library, *motionPhotoTool, *retryFailedMotion, *motionMergeTimeout)
+		return
+	}
+
+	if strings.TrimSpace(*oneZip) != "" {
+		*batchZips = true
+		zipRoots = stringListFlag{strings.TrimSpace(*oneZip)}
+	}
 	if *batchZips {
+		if strings.TrimSpace(*albumModeValue) == "" && !*timelineOnly && !*albumsSeparate && !*ignoreAlbums {
+			options.AlbumMode = fixer.AlbumModeTimelineOnly
+			options.MonthSubfolders = true
+		}
 		workDirs := ParseWorkRoots([]string(workPaths), *workPool)
 		if !keepLiveVideoProvided {
 			options.KeepLiveVideo = true
 		}
 		runBatchZIPMode(batch.Options{
-			ZipRoots:        []string(zipRoots),
-			WorkDir:         firstCLIWorkRoot(workDirs),
-			WorkDirs:        workDirs,
-			OutputDir:       *outputPath,
-			AutoDrives:      *autoDrives,
-			AskOnAmbiguous:  *askOnAmbiguous || *autoDrives,
-			KeepTempOnError: *keepTempOnError,
-			PreflightOnly:   *preflightOnly,
-			Reprocess:       *reprocessBatch,
-			ProcessOptions:  options,
-			Prompt:          cliPrompt,
+			ZipRoots:           []string(zipRoots),
+			WorkDir:            firstCLIWorkRoot(workDirs),
+			WorkDirs:           workDirs,
+			OutputDir:          *outputPath,
+			StagingOutputDir:   *stagingOutput,
+			MotionToolPath:     *motionPhotoTool,
+			RetryFailedMotion:  *retryFailedMotion,
+			MotionMergeTimeout: *motionMergeTimeout,
+			AutoDrives:         *autoDrives,
+			AskOnAmbiguous:     *askOnAmbiguous || *autoDrives,
+			KeepTempOnError:    *keepTempOnError,
+			PreflightOnly:      *preflightOnly,
+			Reprocess:          *reprocessBatch,
+			ProcessOptions:     options,
+			Prompt:             cliPrompt,
 		})
 		return
 	}
@@ -207,24 +260,29 @@ func Main() {
 	} else if exifInfo != nil {
 		fmt.Printf("Using ExifTool %s from %s\n", exifInfo.Version, exifInfo.Path)
 	}
-	if motionInfo, err := fixer.ValidateMotionPhotoDependencies(options); err != nil {
-		fmt.Printf("Error: %v\n", err)
-		os.Exit(1)
-	} else if motionInfo != nil {
-		fmt.Printf("Using MotionPhoto2 from %s\n", motionInfo.Path)
+	if options.CreateMotionPhotos {
+		motionPath, err := fixer.ResolveMotionPhotoTool(*motionPhotoTool)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Using MotionPhoto2 from %s\n", motionPath)
 	}
 
+	errCh := make(chan error, 1)
 	fixer.SafeGo("cli-process", func() {
-		// Invert skipMetadata because the flag is named skipMetadata but the process function expects writeMetadata
-		if err := fixer.Process(context.Background(), *inputPath, *outputPath, progressCh, options); err != nil {
-			fmt.Printf("Error during processing: %v\n", err)
-		}
+		errCh <- fixer.Process(context.Background(), *inputPath, *outputPath, progressCh, options)
 	})
 
+	lastProgress := time.Time{}
 	for p := range progressCh {
 		if p.Processed == 0 {
 			continue
 		}
+		if time.Since(lastProgress) < 250*time.Millisecond && p.Processed < p.Total {
+			continue
+		}
+		lastProgress = time.Now()
 
 		percentageFinished := math.Round(float64(p.Processed) / float64(p.Total) * 100)
 
@@ -235,8 +293,47 @@ func Main() {
 			filepath.Base(p.Current),
 		)
 	}
+	if err := <-errCh; err != nil {
+		fmt.Printf("Error during processing: %v\n", err)
+		os.Exit(1)
+	}
+	if options.CreateMotionPhotos {
+		runMotionMergeMode(*outputPath, *motionPhotoTool, *retryFailedMotion, *motionMergeTimeout)
+		return
+	}
 
 	fmt.Println("\nDone")
+}
+
+func runMotionMergeMode(library string, toolPath string, retryFailed bool, timeout time.Duration) {
+	report, err := fixer.MergeMotionLibrary(context.Background(), fixer.MotionMergeOptions{
+		LibraryRoot: library,
+		ToolPath:    toolPath,
+		RetryFailed: retryFailed,
+		Timeout:     timeout,
+		Progress: func(progress fixer.MotionMergeProgress) {
+			fmt.Printf(
+				"Motion %d/%d %s - %s\n",
+				progress.Processed,
+				progress.Total,
+				progress.Status,
+				filepath.Base(progress.StillPath),
+			)
+		},
+	})
+	if err != nil {
+		fmt.Printf("Error during motion merge: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf(
+		"Motion merge done: candidates=%d merged=%d already=%d failed=%d timed-out=%d\n",
+		report.TotalCandidatePairs,
+		report.MergedSuccessfully,
+		report.SkippedAlreadyMerged,
+		report.FailedMotionPhotoCalls,
+		report.TimedOutMerges,
+	)
+	fmt.Printf("Motion report: %s\n", report.ReportPath)
 }
 
 func ParseWorkRoots(workFlags []string, workPool string) []string {
@@ -278,11 +375,13 @@ func runBatchZIPMode(options batch.Options) {
 		} else if exifInfo != nil {
 			fmt.Printf("Using ExifTool %s from %s\n", exifInfo.Version, exifInfo.Path)
 		}
-		if motionInfo, err := fixer.ValidateMotionPhotoDependencies(options.ProcessOptions); err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
-		} else if motionInfo != nil {
-			fmt.Printf("Using MotionPhoto2 from %s\n", motionInfo.Path)
+		if options.ProcessOptions.CreateMotionPhotos {
+			motionPath, err := fixer.ResolveMotionPhotoTool(options.MotionToolPath)
+			if err != nil {
+				fmt.Printf("Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Using MotionPhoto2 from %s\n", motionPath)
 		}
 	}
 
@@ -306,6 +405,9 @@ func runBatchZIPMode(options batch.Options) {
 	fmt.Printf("Failed: %d\n", result.Failed)
 	fmt.Printf("Planned: %d\n", result.Planned)
 	fmt.Printf("Output: %s\n", result.OutputDir)
+	if result.StagingOutputDir != "" {
+		fmt.Printf("Staging output: %s\n", result.StagingOutputDir)
+	}
 	if len(result.WorkDirs) > 0 {
 		fmt.Printf("Work roots:\n")
 		for _, workDir := range result.WorkDirs {
@@ -315,6 +417,16 @@ func runBatchZIPMode(options batch.Options) {
 		fmt.Printf("Work: %s\n", result.WorkDir)
 	}
 	printAlbumCleanupSummary(result)
+	if result.MotionMerge != nil {
+		fmt.Printf(
+			"Motion merge: candidates=%d merged=%d failed=%d timed-out=%d\n",
+			result.MotionMerge.TotalCandidatePairs,
+			result.MotionMerge.MergedSuccessfully,
+			result.MotionMerge.FailedMotionPhotoCalls,
+			result.MotionMerge.TimedOutMerges,
+		)
+		fmt.Printf("Motion report: %s\n", result.MotionMerge.ReportPath)
+	}
 	fmt.Printf("Manifest: %s\n", result.ManifestPath)
 }
 

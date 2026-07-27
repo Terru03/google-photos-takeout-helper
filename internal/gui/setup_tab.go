@@ -25,6 +25,10 @@ func (s *guiState) buildSetupTab() fyne.CanvasObject {
 	if s.mode == modeBatch {
 		workSection = s.buildWorkSection()
 	}
+	stagingSection := fyne.CanvasObject(nil)
+	if s.mode == modeBatch {
+		stagingSection = pathPickerRow("SSD STAGING OUTPUT", s.stagingPath, "Choose folder", s.selectStagingFolder)
+	}
 
 	warnings := []fyne.CanvasObject{}
 	if s.sameDriveWarning() {
@@ -61,7 +65,7 @@ func (s *guiState) buildSetupTab() fyne.CanvasObject {
 		widget.NewAccordionItem("Advanced options", container.NewVBox(
 			checkboxGrid(
 				s.check("Dry run", &s.options.DryRun),
-				s.check("Create Windows Motion Photos", &s.options.CreateMotionPhotos),
+				s.check("Merge motion photos after all ZIPs", &s.options.CreateMotionPhotos),
 				s.check("Keep live-video copies", &s.options.KeepLiveVideo),
 				s.check("Keep temp folder if an error occurs", &s.keepTempOnErr),
 			),
@@ -79,6 +83,9 @@ func (s *guiState) buildSetupTab() fyne.CanvasObject {
 	}
 	if workSection != nil {
 		items = append(items, workSection)
+	}
+	if stagingSection != nil {
+		items = append(items, stagingSection)
 	}
 	items = append(items, warnings...)
 	items = append(items, safeOptions, advanced, start)

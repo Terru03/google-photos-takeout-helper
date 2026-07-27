@@ -38,6 +38,10 @@ type MotionPhotoPassResult struct {
 
 var motionPhotoToolPathOverride string
 
+func SetMotionPhotoToolPath(path string) {
+	motionPhotoToolPathOverride = strings.TrimSpace(path)
+}
+
 type motionPhotoCleanupTarget struct {
 	videoOutputPath          string
 	imageOutputPath          string

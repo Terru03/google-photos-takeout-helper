@@ -131,6 +131,12 @@ if "%~1"=="--help" (
 if defined FAKE_MOTIONPHOTO_ARGS_FILE (
   >> "%FAKE_MOTIONPHOTO_ARGS_FILE%" echo !ARGS!
 )
+if defined FAKE_MOTIONPHOTO_SLEEP_MATCH (
+  echo !ARGS! | findstr /c:"%FAKE_MOTIONPHOTO_SLEEP_MATCH%" >nul
+  if not errorlevel 1 (
+    powershell -NoProfile -Command "Start-Sleep -Milliseconds %FAKE_MOTIONPHOTO_SLEEP_MS%"
+  )
+)
 if defined FAKE_MOTIONPHOTO_APPEND_TO (
   >> "%FAKE_MOTIONPHOTO_APPEND_TO%" echo %FAKE_MOTIONPHOTO_APPEND_TEXT%
 )
@@ -150,6 +156,13 @@ fi
 if [ -n "${FAKE_MOTIONPHOTO_ARGS_FILE}" ]; then
   printf '%s\n' "$args" >> "${FAKE_MOTIONPHOTO_ARGS_FILE}"
 fi
+case "$args" in
+  *"${FAKE_MOTIONPHOTO_SLEEP_MATCH}"*)
+    if [ -n "${FAKE_MOTIONPHOTO_SLEEP_MATCH}" ]; then
+      sleep "${FAKE_MOTIONPHOTO_SLEEP_SECONDS}"
+    fi
+    ;;
+esac
 if [ -n "${FAKE_MOTIONPHOTO_APPEND_TO}" ]; then
   printf '%s\n' "${FAKE_MOTIONPHOTO_APPEND_TEXT}" >> "${FAKE_MOTIONPHOTO_APPEND_TO}"
 fi
@@ -171,9 +184,11 @@ exit "${FAKE_MOTIONPHOTO_EXIT_CODE}"
 	})
 
 	defaultEnv := map[string]string{
-		"FAKE_MOTIONPHOTO_STDOUT":      "",
-		"FAKE_MOTIONPHOTO_EXIT_CODE":   "0",
-		"FAKE_MOTIONPHOTO_APPEND_TEXT": "embedded",
+		"FAKE_MOTIONPHOTO_STDOUT":        "",
+		"FAKE_MOTIONPHOTO_EXIT_CODE":     "0",
+		"FAKE_MOTIONPHOTO_APPEND_TEXT":   "embedded",
+		"FAKE_MOTIONPHOTO_SLEEP_MS":      "0",
+		"FAKE_MOTIONPHOTO_SLEEP_SECONDS": "0",
 	}
 	for key, value := range defaultEnv {
 		t.Setenv(key, value)

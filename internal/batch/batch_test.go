@@ -92,6 +92,38 @@ func TestManifestResumeLogic(t *testing.T) {
 	}
 }
 
+func TestManifestDoesNotSilentlySkipOlderWorkflow(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".gtf", "batch", "manifest.jsonl")
+	item := ZipItem{
+		Name:      "takeout-001.zip",
+		Path:      filepath.Join(root, "takeout-001.zip"),
+		SizeBytes: 10,
+		ModTime:   time.Unix(100, 0).UTC(),
+	}
+	item.Fingerprint = zipFingerprint(item)
+
+	manifest, err := OpenManifest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = manifest.Close()
+	}()
+
+	entry := manifestEntryFor(item, root, statusCompletedReview)
+	entry.WorkflowVersion = 1
+	if err := manifest.Append(entry); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.AlreadySuccessful(item) {
+		t.Fatal("older workflow must not count as safe resume")
+	}
+	if got := manifest.LegacySuccessfulCount([]ZipItem{item}); got != 1 {
+		t.Fatalf("legacy successful count = %d, want 1", got)
+	}
+}
+
 func TestPreflightValidatesMotionPhotoDependency(t *testing.T) {
 	root := t.TempDir()
 	zipRoot := filepath.Join(root, "zips")
@@ -161,6 +193,20 @@ func TestFindTakeoutZipsIgnoresIncompleteDownloads(t *testing.T) {
 	}
 	if filepath.Base(zips[0].Path) != "takeout-001.zip" {
 		t.Fatalf("unexpected ZIP found: %s", zips[0].Path)
+	}
+}
+
+func TestFindTakeoutZipsAcceptsOneZipPath(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "takeout-one.zip")
+	writeTestZip(t, zipPath, map[string]string{
+		"Takeout/Google Photos/Photos from 2024/IMG_0001.jpg": "image",
+	})
+	zips, err := FindTakeoutZips([]string{zipPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(zips) != 1 || zips[0].Path != zipPath {
+		t.Fatalf("one-ZIP path not used: %#v", zips)
 	}
 }
 
@@ -400,6 +446,21 @@ func TestSelectBestWorkRootFailsWhenNoRootHasSpace(t *testing.T) {
 	}
 }
 
+func TestWorkRootStatusesUseExistingParentForNewFolder(t *testing.T) {
+	root := t.TempDir()
+	newWorkRoot := filepath.Join(root, "new", "work")
+	statuses := workRootStatuses([]string{newWorkRoot}, nil, 1)
+	if len(statuses) != 1 {
+		t.Fatalf("got %d statuses", len(statuses))
+	}
+	if statuses[0].Err != nil {
+		t.Fatalf("new work root probe failed: %v", statuses[0].Err)
+	}
+	if !statuses[0].Usable || statuses[0].FreeBytes <= 0 {
+		t.Fatalf("new work root should use parent free space: %#v", statuses[0])
+	}
+}
+
 func TestRunNeverDeletesZipFile(t *testing.T) {
 	root := t.TempDir()
 	zipRoot := filepath.Join(root, "zips")
@@ -555,6 +616,139 @@ func TestRunCompletesWithReviewCleansTempAndSkipsRerun(t *testing.T) {
 	}
 }
 
+func TestRunStagesCommitsCleansAndSkipsRerun(t *testing.T) {
+	root := t.TempDir()
+	zipRoot := filepath.Join(root, "zips")
+	work := filepath.Join(root, "work")
+	staging := filepath.Join(root, "staging")
+	output := filepath.Join(root, "output")
+	for _, dir := range []string{zipRoot, work, staging} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestZip(t, filepath.Join(zipRoot, "takeout-001.zip"), map[string]string{
+		"Takeout/Google Photos/Photos from 2024/IMG_0001.jpg": "image",
+	})
+
+	called := 0
+	options := Options{
+		ZipRoots:          []string{zipRoot},
+		WorkDir:           work,
+		StagingOutputDir:  staging,
+		OutputDir:         output,
+		SafetyMarginBytes: 1,
+		ProcessOptions: fixer.ProcessOptions{
+			WriteMetadata:       false,
+			VerifyWrites:        false,
+			RestoreMOVExtension: false,
+		},
+		Process: func(_ context.Context, _ string, stagingRoot string, progressCh chan<- fixer.Progress, processOptions fixer.ProcessOptions) error {
+			defer close(progressCh)
+			called++
+			stagedPath := filepath.Join(stagingRoot, "Photos from 2024", "IMG_0001.jpg")
+			finalPath := filepath.Join(processOptions.FinalOutputRoot, "Photos from 2024", "IMG_0001.jpg")
+			if err := os.MkdirAll(filepath.Dir(stagedPath), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(stagedPath, []byte("fixed"), 0o644); err != nil {
+				return err
+			}
+			writeStagingReport(t, processOptions.RuntimeRoot, fixer.ProcessRecord{
+				SourceID:      processOptions.SourceID,
+				SourceRelPath: "Photos from 2024/IMG_0001.jpg",
+				OutputPath:    finalPath,
+				StagedPath:    stagedPath,
+				Status:        fixer.OperationCopied,
+			})
+			return nil
+		},
+	}
+
+	result, err := Run(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Processed != 1 {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	finalPath := filepath.Join(output, "Photos from 2024", "IMG_0001.jpg")
+	if got, err := os.ReadFile(finalPath); err != nil || string(got) != "fixed" {
+		t.Fatalf("staged file not committed: %q %v", string(got), err)
+	}
+	assertNoTempDirs(t, work)
+	assertNoStageDirs(t, staging)
+
+	result, err = Run(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called != 1 || result.Skipped != 1 {
+		t.Fatalf("completed staging run did not resume-skip: calls=%d result=%#v", called, result)
+	}
+}
+
+func TestRunKeepsStagingFolderWhenCommitFails(t *testing.T) {
+	root := t.TempDir()
+	zipRoot := filepath.Join(root, "zips")
+	work := filepath.Join(root, "work")
+	staging := filepath.Join(root, "staging")
+	output := filepath.Join(root, "output")
+	for _, dir := range []string{zipRoot, work, staging} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestZip(t, filepath.Join(zipRoot, "takeout-001.zip"), map[string]string{
+		"Takeout/Google Photos/Photos from 2024/IMG_0001.jpg": "image",
+	})
+
+	result, err := Run(context.Background(), Options{
+		ZipRoots:          []string{zipRoot},
+		WorkDir:           work,
+		StagingOutputDir:  staging,
+		OutputDir:         output,
+		SafetyMarginBytes: 1,
+		ProcessOptions: fixer.ProcessOptions{
+			WriteMetadata:       false,
+			VerifyWrites:        false,
+			RestoreMOVExtension: false,
+		},
+		Process: func(_ context.Context, _ string, stagingRoot string, progressCh chan<- fixer.Progress, processOptions fixer.ProcessOptions) error {
+			defer close(progressCh)
+			stagedPath := filepath.Join(stagingRoot, "IMG_0001.jpg")
+			if err := os.WriteFile(stagedPath, []byte("fixed"), 0o644); err != nil {
+				return err
+			}
+			writeStagingReport(t, processOptions.RuntimeRoot, fixer.ProcessRecord{
+				SourceRelPath: "IMG_0001.jpg",
+				OutputPath:    filepath.Join(root, "outside", "IMG_0001.jpg"),
+				StagedPath:    stagedPath,
+				Status:        fixer.OperationCopied,
+			})
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected staging commit failure")
+	}
+	if result.Failed != 1 {
+		t.Fatalf("expected one failed ZIP: %#v", result)
+	}
+	stageDirs := stageDirs(t, staging)
+	if len(stageDirs) != 1 {
+		t.Fatalf("failed commit should keep one staging folder, got %v", stageDirs)
+	}
+	if !fixer.FileExists(filepath.Join(stageDirs[0], "IMG_0001.jpg")) {
+		t.Fatal("failed commit lost staged file")
+	}
+	assertNoTempDirs(t, work)
+	entry := readLatestManifestEntry(t, manifestPath(output))
+	if entry.Status != statusFailed || entry.StagingRoot == "" {
+		t.Fatalf("failed staging manifest wrong: %#v", entry)
+	}
+}
+
 func TestRunFailsBadZipExtractionAndCleansTemp(t *testing.T) {
 	root := t.TempDir()
 	zipRoot := filepath.Join(root, "zips")
@@ -656,6 +850,68 @@ func TestRunSkipsSuccessfulManifestEntry(t *testing.T) {
 	}
 	if result.Skipped != 1 {
 		t.Fatalf("expected one skipped ZIP, got %d", result.Skipped)
+	}
+}
+
+func TestRunBlocksOlderWorkflowManifestWithoutReprocess(t *testing.T) {
+	root := t.TempDir()
+	zipRoot := filepath.Join(root, "zips")
+	work := filepath.Join(root, "work")
+	output := filepath.Join(root, "output")
+	if err := os.MkdirAll(zipRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	zipPath := filepath.Join(zipRoot, "takeout-001.zip")
+	writeTestZip(t, zipPath, map[string]string{
+		"Takeout/Google Photos/Photos from 2024/IMG_0001.jpg": "image",
+	})
+	info, err := os.Stat(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := newZipItem(zipPath, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := OpenManifest(manifestPath(output))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := manifestEntryFor(item, output, statusCompleted)
+	entry.WorkflowVersion = 1
+	if err := manifest.Append(entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := manifest.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	called := 0
+	_, err = Run(context.Background(), Options{
+		ZipRoots:          []string{zipRoot},
+		WorkDir:           work,
+		OutputDir:         output,
+		SafetyMarginBytes: 1,
+		ProcessOptions: fixer.ProcessOptions{
+			WriteMetadata:       false,
+			VerifyWrites:        false,
+			RestoreMOVExtension: false,
+		},
+		Process: func(_ context.Context, _ string, _ string, progressCh chan<- fixer.Progress, _ fixer.ProcessOptions) error {
+			defer close(progressCh)
+			called++
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "older workflow") {
+		t.Fatalf("expected older workflow guard, got %v", err)
+	}
+	if called != 0 {
+		t.Fatalf("process ran %d times", called)
 	}
 }
 
@@ -811,4 +1067,55 @@ func assertNoTempDirs(t *testing.T, workDir string) {
 			t.Fatalf("expected temp work folder to be cleaned, found %s", filepath.Join(workDir, entry.Name()))
 		}
 	}
+}
+
+func writeStagingReport(t *testing.T, runtimeRoot string, record fixer.ProcessRecord) {
+	t.Helper()
+	reportDir := filepath.Join(runtimeRoot, ".gtf", "reports")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	report := fixer.RunReport{
+		StartedAt:  time.Now().UTC(),
+		FinishedAt: time.Now().UTC(),
+		OutputRoot: runtimeRoot,
+		Summary: fixer.RunReportSummary{
+			TotalMedia:  1,
+			Matched:     1,
+			OutputMedia: 1,
+		},
+		Records: []fixer.ProcessRecord{record},
+	}
+	data, err := json.Marshal(&report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(reportDir, "latest.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(reportDir, "latest.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertNoStageDirs(t *testing.T, stagingRoot string) {
+	t.Helper()
+	if dirs := stageDirs(t, stagingRoot); len(dirs) != 0 {
+		t.Fatalf("expected staging cleanup, found %v", dirs)
+	}
+}
+
+func stageDirs(t *testing.T, stagingRoot string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(stagingRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "gtf-stage-") {
+			paths = append(paths, filepath.Join(stagingRoot, entry.Name()))
+		}
+	}
+	return paths
 }

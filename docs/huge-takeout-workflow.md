@@ -23,6 +23,7 @@ Keep these locations separate:
 |---|---|---|
 | ZIP source root | Where the original Takeout ZIPs are stored | `D:\Takeout_Zips` |
 | Work folder | Temporary extraction folder for one ZIP at a time | `C:\GTF_Work` |
+| Staging output | Fast per-ZIP processed output before commit | `C:\Takeout_Staging` |
 | Final output folder | Repaired photo library | `B:\Google_Photos_Final` |
 
 Do not put the work folder inside the output folder. Do not put the output folder inside a ZIP source folder.
@@ -72,7 +73,7 @@ Use this to check matching quality, suspicious dates, and folder layout before a
 ### 3. Real batch run
 
 ```powershell
-.\gtf-cli.exe --batch-zips --zip-root "D:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final" --verify
+.\GoogleTakeoutFixer.exe --batch-zips --zip-root "D:\Takeout_Zips" --work "C:\GTF_Work" --staging-output "C:\Takeout_Staging" --output "B:\Google_Photos_Final" --timeline-only --verify
 ```
 
 Use `--verify` when you want the tool to read metadata back with ExifTool after writing.
@@ -93,13 +94,15 @@ OUTPUT\.gtf\batch\manifest.jsonl
 
 ### 5. Motion Photos
 
-If MotionPhoto2 is installed and configured, you can enable Motion Photo rebuilding:
+ZIP processing keeps still and companion video files. It does not run MotionPhoto2.
+
+After all ZIPs finish, run one separate pass:
 
 ```powershell
-.\gtf-cli.exe --batch-zips --zip-root "D:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final" --motion-photos --keep-live-video --verify
+.\GoogleTakeoutFixer.exe --merge-motion-pass --library "B:\Google_Photos_Final" --motionphoto2 "C:\Tools\motionphoto2.exe"
 ```
 
-In batch mode, keeping live-video files is safer because it preserves the original partner video output even after MotionPhoto2 embeds a playable Motion Photo.
+Use `--retry-failed-motion` to retry only failed and timed-out pairs.
 
 ## Useful flags
 
@@ -108,15 +111,19 @@ In batch mode, keeping live-video files is safer because it preserves the origin
 | `--batch-zips` | Enables split-ZIP processing. |
 | `--zip-root "PATH"` | Adds a ZIP file or folder to scan for Takeout ZIPs. Can be repeated. |
 | `--work "PATH"` | Temporary extraction folder. |
+| `--staging-output "PATH"` | Fast per-ZIP output before final commit. |
 | `--output "PATH"` | Final repaired library folder. |
+| `--one-zip "PATH"` | Process one ZIP for a small debug run. |
+| `--timeline-only` | Build primary library only from Date Taken. |
+| `--albums-separate` | Keep albums under `OUTPUT\Albums`. |
 | `--preflight-only` | Checks ZIPs, paths, and space risks without extracting. |
 | `--dry-run` | Extracts and audits without writing repaired media. |
 | `--verify` | Reads metadata back after writing. |
 | `--ask-on-ambiguous` | Asks before continuing when drive/path choices are unclear. |
 | `--keep-temp-on-error` | Keeps extracted temp files after a failure for review. |
 | `--reprocess` | Processes ZIPs again even if the manifest says they completed. |
-| `--motion-photos` | Runs MotionPhoto2 after the repair pipeline. |
-| `--keep-live-video` | Keeps standalone live-video files after Motion Photo embedding. |
+| `--merge-motion-pass` | Runs only the resumable final-library merge pass. |
+| `--retry-failed-motion` | Retries failed or timed-out merge pairs. |
 
 ## Report locations
 

@@ -23,12 +23,13 @@ func Run(ctx context.Context, options Options) (Result, error) {
 	if options.PreflightOnly {
 		report, err := Preflight(options)
 		result := Result{
-			ManifestPath: report.ManifestPath,
-			OutputDir:    report.OutputDir,
-			WorkDir:      report.WorkDir,
-			WorkDirs:     report.WorkDirs,
-			ZipCount:     report.ZipCount,
-			Preflight:    &report,
+			ManifestPath:     report.ManifestPath,
+			OutputDir:        report.OutputDir,
+			StagingOutputDir: report.StagingOutputDir,
+			WorkDir:          report.WorkDir,
+			WorkDirs:         report.WorkDirs,
+			ZipCount:         report.ZipCount,
+			Preflight:        &report,
 		}
 		return result, err
 	}
@@ -70,11 +71,21 @@ func Run(ctx context.Context, options Options) (Result, error) {
 	options.WorkDirs = workDirs
 	options.WorkDir = firstWorkDir(workDirs)
 
-	if err := ValidateBatchPathSet(options.ZipRoots, options.WorkDirs, options.OutputDir, false); err != nil {
+	if err := ValidateBatchPathSetWithStaging(options.ZipRoots, options.WorkDirs, options.OutputDir, options.StagingOutputDir, false); err != nil {
 		return Result{}, err
 	}
 	if err := ensureWorkRoots(options.WorkDirs); err != nil {
 		return Result{}, err
+	}
+	if strings.TrimSpace(options.StagingOutputDir) != "" {
+		stagingAbs, err := filepath.Abs(options.StagingOutputDir)
+		if err != nil {
+			return Result{}, err
+		}
+		options.StagingOutputDir = stagingAbs
+		if err := os.MkdirAll(options.StagingOutputDir, 0o755); err != nil {
+			return Result{}, fmt.Errorf("create staging output folder: %w", err)
+		}
 	}
 
 	manifest, err := OpenManifest(manifestPath(options.OutputDir))
@@ -88,11 +99,18 @@ func Run(ctx context.Context, options Options) (Result, error) {
 	}()
 
 	result := Result{
-		ManifestPath: manifest.Path(),
-		OutputDir:    options.OutputDir,
-		WorkDir:      options.WorkDir,
-		WorkDirs:     options.WorkDirs,
-		ZipCount:     len(zips),
+		ManifestPath:     manifest.Path(),
+		OutputDir:        options.OutputDir,
+		StagingOutputDir: options.StagingOutputDir,
+		WorkDir:          options.WorkDir,
+		WorkDirs:         options.WorkDirs,
+		ZipCount:         len(zips),
+	}
+	if legacyCount := manifest.LegacySuccessfulCount(zips); legacyCount > 0 && !options.Reprocess {
+		return result, fmt.Errorf(
+			"output has %d ZIPs completed by older workflow; use clean output folder, move old output aside, or pass --reprocess only if mixing old and new files is wanted",
+			legacyCount,
+		)
 	}
 	if err := manifest.MarkInterrupted(zips); err != nil {
 		return result, err
@@ -155,6 +173,9 @@ func Run(ctx context.Context, options Options) (Result, error) {
 	if result.Stopped {
 		return result, nil
 	}
+	if result.Failed > 0 {
+		return result, fmt.Errorf("%d ZIP file(s) failed; rerun to retry failed or interrupted ZIPs", result.Failed)
+	}
 	if options.ProcessOptions.Normalized().AlbumMode == fixer.AlbumModeUniqueOnly {
 		fixer.Log(fixer.LoggerInfo, "Album cleanup: remove exact duplicates already present in timeline")
 		cleanup, cleanupErr := fixer.CleanupDuplicateAlbumFiles(options.OutputDir, options.ProcessOptions)
@@ -170,8 +191,27 @@ func Run(ctx context.Context, options Options) (Result, error) {
 			cleanup.ReportPath,
 		)
 	}
-	if result.Failed > 0 {
-		return result, fmt.Errorf("%d ZIP file(s) failed; rerun to retry failed or interrupted ZIPs", result.Failed)
+	if options.ProcessOptions.CreateMotionPhotos {
+		fixer.Log(fixer.LoggerInfo, "Phase 2: merge motion photos in final library")
+		mergeReport, mergeErr := fixer.MergeMotionLibrary(ctx, fixer.MotionMergeOptions{
+			LibraryRoot: options.OutputDir,
+			ToolPath:    options.MotionToolPath,
+			RetryFailed: options.RetryFailedMotion,
+			Timeout:     options.MotionMergeTimeout,
+		})
+		result.MotionMerge = &mergeReport
+		if mergeErr != nil {
+			return result, fmt.Errorf("motion merge pass: %w", mergeErr)
+		}
+		if mergeReport.FailedMotionPhotoCalls > 0 || mergeReport.TimedOutMerges > 0 {
+			fixer.Log(
+				fixer.LoggerWarn,
+				"Motion merge finished with failures=%d timeouts=%d; report %s",
+				mergeReport.FailedMotionPhotoCalls,
+				mergeReport.TimedOutMerges,
+				mergeReport.ReportPath,
+			)
+		}
 	}
 	return result, nil
 }
@@ -180,8 +220,10 @@ func validateProcessingDependencies(options Options) error {
 	if _, err := fixer.ValidateProcessingDependencies(options.ProcessOptions); err != nil {
 		return err
 	}
-	if _, err := fixer.ValidateMotionPhotoDependencies(options.ProcessOptions); err != nil {
-		return err
+	if options.ProcessOptions.Normalized().CreateMotionPhotos {
+		if _, err := fixer.ResolveMotionPhotoTool(options.MotionToolPath); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -217,13 +259,26 @@ func runOneZip(
 	if err != nil {
 		return "", err
 	}
+	stagingRoot := ""
+	if strings.TrimSpace(options.StagingOutputDir) != "" {
+		stagingRoot, err = os.MkdirTemp(options.StagingOutputDir, "gtf-stage-")
+		if err != nil {
+			_ = cleanupTempExtract(tempDir, workRoot.Path)
+			return "", fmt.Errorf("create ZIP staging output: %w", err)
+		}
+	}
 
 	startedAt := time.Now().UTC()
 	startEntry := manifestEntryFor(item, options.OutputDir, statusPending)
 	startEntry.StartTime = startedAt
 	startEntry.WorkRoot = workRoot.Path
 	startEntry.ExtractedRoot = tempDir
+	startEntry.StagingRoot = stagingRoot
 	if err := manifest.Append(startEntry); err != nil {
+		if stagingRoot != "" {
+			_ = cleanupStagingRoot(stagingRoot, options.StagingOutputDir)
+		}
+		_ = cleanupTempExtract(tempDir, workRoot.Path)
 		return "", err
 	}
 	emitProgress(options, BatchProgress{
@@ -243,6 +298,7 @@ func runOneZip(
 		return "", err
 	}
 	lastLog := time.Time{}
+	lastExtractEmit := time.Time{}
 	if err := ExtractZipWithProgress(item.Path, tempDir, func(progress ExtractProgress) {
 		displayFile := ""
 		shouldLog := time.Since(lastLog) >= 5*time.Second
@@ -250,20 +306,25 @@ func runOneZip(
 			lastLog = time.Now()
 			displayFile = progress.CurrentFile
 		}
-		emitProgress(options, BatchProgress{
-			CurrentZip:    item.Path,
-			CurrentIndex:  currentIndex,
-			Phase:         "extract",
-			Completed:     completedBefore,
-			Total:         total,
-			FileProcessed: progress.ProcessedFiles,
-			FileTotal:     progress.TotalFiles,
-			CurrentFile:   displayFile,
-			CurrentBytes:  progress.CurrentBytes,
-			TotalBytes:    progress.TotalBytes,
-			ReportPath:    manifest.Path(),
-			WorkRoot:      workRoot.Path,
-		})
+		shouldEmit := time.Since(lastExtractEmit) >= 250*time.Millisecond ||
+			(progress.TotalFiles > 0 && progress.ProcessedFiles >= progress.TotalFiles)
+		if shouldEmit {
+			lastExtractEmit = time.Now()
+			emitProgress(options, BatchProgress{
+				CurrentZip:    item.Path,
+				CurrentIndex:  currentIndex,
+				Phase:         "extract",
+				Completed:     completedBefore,
+				Total:         total,
+				FileProcessed: progress.ProcessedFiles,
+				FileTotal:     progress.TotalFiles,
+				CurrentFile:   displayFile,
+				CurrentBytes:  progress.CurrentBytes,
+				TotalBytes:    progress.TotalBytes,
+				ReportPath:    manifest.Path(),
+				WorkRoot:      workRoot.Path,
+			})
+		}
 		if shouldLog {
 			if progress.TotalBytes > 0 && progress.CurrentBytes > 0 {
 				fixer.Log(
@@ -305,6 +366,15 @@ func runOneZip(
 
 	progressCh := make(chan fixer.Progress)
 	errCh := make(chan error, 1)
+	processOutputRoot := options.OutputDir
+	processOptions := options.ProcessOptions
+	processOptions.CreateMotionPhotos = false
+	processOptions.SourceID = item.Fingerprint
+	if stagingRoot != "" {
+		processOutputRoot = stagingRoot
+		processOptions.RuntimeRoot = options.OutputDir
+		processOptions.FinalOutputRoot = options.OutputDir
+	}
 	go func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
@@ -312,32 +382,40 @@ func runOneZip(
 				errCh <- fmt.Errorf("process panic: %v", recovered)
 			}
 		}()
-		errCh <- options.Process(ctx, googlePhotosDir, options.OutputDir, progressCh, options.ProcessOptions)
+		errCh <- options.Process(ctx, googlePhotosDir, processOutputRoot, progressCh, processOptions)
 	}()
+	lastProcessLog := time.Time{}
+	lastProcessEmit := time.Time{}
 	for progress := range progressCh {
 		if progress.Total == 0 {
 			continue
 		}
-		fixer.Log(
-			fixer.LoggerInfo,
-			"ZIP %s progress %d/%d %s",
-			item.Name,
-			progress.Processed,
-			progress.Total,
-			filepath.Base(progress.Current),
-		)
-		emitProgress(options, BatchProgress{
-			CurrentZip:    item.Path,
-			CurrentIndex:  currentIndex,
-			Phase:         "process",
-			Completed:     completedBefore,
-			Total:         total,
-			FileProcessed: progress.Processed,
-			FileTotal:     progress.Total,
-			CurrentFile:   progress.Current,
-			ReportPath:    manifest.Path(),
-			WorkRoot:      workRoot.Path,
-		})
+		if time.Since(lastProcessLog) >= 5*time.Second || progress.Processed >= progress.Total {
+			lastProcessLog = time.Now()
+			fixer.Log(
+				fixer.LoggerInfo,
+				"ZIP %s progress %d/%d %s",
+				item.Name,
+				progress.Processed,
+				progress.Total,
+				filepath.Base(progress.Current),
+			)
+		}
+		if time.Since(lastProcessEmit) >= 250*time.Millisecond || progress.Processed >= progress.Total {
+			lastProcessEmit = time.Now()
+			emitProgress(options, BatchProgress{
+				CurrentZip:    item.Path,
+				CurrentIndex:  currentIndex,
+				Phase:         "process",
+				Completed:     completedBefore,
+				Total:         total,
+				FileProcessed: progress.Processed,
+				FileTotal:     progress.Total,
+				CurrentFile:   progress.Current,
+				ReportPath:    manifest.Path(),
+				WorkRoot:      workRoot.Path,
+			})
+		}
 	}
 	processErr := <-errCh
 
@@ -347,6 +425,24 @@ func runOneZip(
 	}
 	if reportErr != nil {
 		return "", finishFailedZip(manifest, processingEntry, options, reportPath, report, reportErr)
+	}
+	if stagingRoot != "" {
+		fixer.Log(fixer.LoggerInfo, "Commit staged ZIP output: %s -> %s", stagingRoot, options.OutputDir)
+		emitProgress(options, BatchProgress{
+			CurrentZip:   item.Path,
+			CurrentIndex: currentIndex,
+			Phase:        "commit",
+			Completed:    completedBefore,
+			Total:        total,
+			ReportPath:   manifest.Path(),
+			WorkRoot:     workRoot.Path,
+		})
+		if err := CommitStagedReport(ctx, stagingRoot, options.OutputDir, report, options.ProcessOptions.UseSymlinks); err != nil {
+			return "", finishFailedZip(manifest, processingEntry, options, reportPath, report, fmt.Errorf("commit staged output: %w", err))
+		}
+		if err := cleanupStagingRoot(stagingRoot, options.StagingOutputDir); err != nil {
+			return "", finishFailedZip(manifest, processingEntry, options, reportPath, report, fmt.Errorf("clean staging output: %w", err))
+		}
 	}
 
 	if err := cleanupTempExtract(tempDir, workRoot.Path); err != nil {
@@ -377,6 +473,7 @@ func finishFailedZip(
 	report *fixer.RunReport,
 	runErr error,
 ) error {
+	failedFromStatus := entry.Status
 	entry.Status = statusFailed
 	entry.EndTime = time.Now().UTC()
 	entry.ReportPath = reportPath
@@ -393,6 +490,11 @@ func finishFailedZip(
 			if cleanupErr := cleanupTempExtract(entry.ExtractedRoot, entry.WorkRoot); cleanupErr != nil {
 				entry.Error = strings.TrimSpace(entry.Error + "; temp cleanup failed: " + cleanupErr.Error())
 			}
+		}
+	}
+	if failedFromStatus == statusPending && entry.StagingRoot != "" && options.StagingOutputDir != "" {
+		if cleanupErr := cleanupStagingRoot(entry.StagingRoot, options.StagingOutputDir); cleanupErr != nil {
+			entry.Error = strings.TrimSpace(entry.Error + "; staging cleanup failed: " + cleanupErr.Error())
 		}
 	}
 	if err := manifest.Append(entry); err != nil {

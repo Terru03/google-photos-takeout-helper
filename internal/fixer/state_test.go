@@ -62,3 +62,39 @@ func TestStateStoreKeepsLatestRecordAndHashIndex(t *testing.T) {
 		t.Fatalf("expected canonical hash hash-1, got %q", canonical.SourceHash)
 	}
 }
+
+func TestStateStoreSeparatesSameRelativePathFromDifferentZIPs(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.jsonl")
+	store, err := OpenStateStore(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := ProcessRecord{
+		SourceID:      "zip-001",
+		SourceRelPath: "Photos from 2024/IMG_1.jpg",
+		OutputPath:    "out/first.jpg",
+		Status:        OperationCopied,
+	}
+	second := first
+	second.SourceID = "zip-002"
+	second.OutputPath = "out/second.jpg"
+	if err := store.Put(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(second); err != nil {
+		t.Fatal(err)
+	}
+
+	gotFirst, ok := store.GetForSource(first.SourceID, first.SourceRelPath)
+	if !ok || gotFirst.OutputPath != first.OutputPath {
+		t.Fatalf("first ZIP record lost: %#v", gotFirst)
+	}
+	gotSecond, ok := store.GetForSource(second.SourceID, second.SourceRelPath)
+	if !ok || gotSecond.OutputPath != second.OutputPath {
+		t.Fatalf("second ZIP record lost: %#v", gotSecond)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

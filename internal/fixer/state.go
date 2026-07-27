@@ -8,14 +8,20 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 )
+
+const stateSyncEvery = 128
 
 type StateStore struct {
 	path      string
 	file      *os.File
+	writer    *bufio.Writer
 	mu        sync.RWMutex
 	records   map[string]ProcessRecord
 	hashIndex map[string]ProcessRecord
+	pending   int
+	lastSync  time.Time
 	Warnings  []string
 }
 
@@ -51,7 +57,7 @@ func OpenStateStore(path string) (*StateStore, error) {
 				store.Warnings = append(store.Warnings, fmt.Sprintf("ignored state line %d with empty sourceRelPath", lineNumber))
 				continue
 			}
-			store.records[record.SourceRelPath] = record
+			store.records[record.StateKey()] = record
 			if record.SourceHash != "" && record.Successful() && record.OutputPath != "" {
 				if _, exists := store.hashIndex[record.SourceHash]; !exists {
 					store.hashIndex[record.SourceHash] = record
@@ -68,6 +74,8 @@ func OpenStateStore(path string) (*StateStore, error) {
 		return nil, err
 	}
 	store.file = file
+	store.writer = bufio.NewWriterSize(file, 256*1024)
+	store.lastSync = time.Now()
 	return store, nil
 }
 
@@ -78,15 +86,37 @@ func (s *StateStore) Close() error {
 	if s.file == nil {
 		return nil
 	}
-	err := s.file.Close()
+	var firstErr error
+	if s.writer != nil {
+		if err := s.writer.Flush(); err != nil {
+			firstErr = err
+		}
+	}
+	if s.pending > 0 {
+		if err := s.file.Sync(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if err := s.file.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
 	s.file = nil
-	return err
+	s.writer = nil
+	return firstErr
 }
 
 func (s *StateStore) Get(sourceRelPath string) (ProcessRecord, bool) {
+	return s.GetForSource("", sourceRelPath)
+}
+
+func (s *StateStore) GetForSource(sourceID string, sourceRelPath string) (ProcessRecord, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	record, ok := s.records[sourceRelPath]
+	key := sourceRelPath
+	if sourceID != "" {
+		key = sourceID + "|" + sourceRelPath
+	}
+	record, ok := s.records[key]
 	return record, ok
 }
 
@@ -98,20 +128,47 @@ func (s *StateStore) Put(record ProcessRecord) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.file.Write(append(data, '\n')); err != nil {
+	if s.writer == nil {
+		return fmt.Errorf("state store is closed")
+	}
+	if _, err := s.writer.Write(append(data, '\n')); err != nil {
 		return err
 	}
-	if err := s.file.Sync(); err != nil {
-		return err
+	s.pending++
+	if s.pending >= stateSyncEvery || time.Since(s.lastSync) >= 2*time.Second {
+		if err := s.flushLocked(); err != nil {
+			return err
+		}
 	}
 
-	s.records[record.SourceRelPath] = record
+	s.records[record.StateKey()] = record
 	if record.SourceHash != "" && record.Successful() && record.OutputPath != "" {
 		if _, exists := s.hashIndex[record.SourceHash]; !exists {
 			s.hashIndex[record.SourceHash] = record
 		}
 	}
 
+	return nil
+}
+
+func (s *StateStore) Flush() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.flushLocked()
+}
+
+func (s *StateStore) flushLocked() error {
+	if s.file == nil || s.writer == nil {
+		return nil
+	}
+	if err := s.writer.Flush(); err != nil {
+		return err
+	}
+	if err := s.file.Sync(); err != nil {
+		return err
+	}
+	s.pending = 0
+	s.lastSync = time.Now()
 	return nil
 }
 

@@ -22,7 +22,16 @@ func Process(
 		return err
 	}
 
-	runtimePaths, err := ResolveRuntimePaths(outputPath)
+	finalOutputRoot := outputPath
+	if strings.TrimSpace(options.FinalOutputRoot) != "" {
+		finalOutputRoot = options.FinalOutputRoot
+	}
+	runtimeRoot := finalOutputRoot
+	if strings.TrimSpace(options.RuntimeRoot) != "" {
+		runtimeRoot = options.RuntimeRoot
+	}
+
+	runtimePaths, err := ResolveRuntimePaths(runtimeRoot)
 	if err != nil {
 		return err
 	}
@@ -56,18 +65,12 @@ func Process(
 		return err
 	}
 
-	if exifInfo, err := ValidateProcessingDependencies(options); err != nil {
+	exifInfo, err := ValidateProcessingDependencies(options)
+	if err != nil {
 		return err
-	} else if exifInfo != nil {
+	}
+	if exifInfo != nil {
 		Log(LoggerInfo, "Using ExifTool %s from %s", exifInfo.Version, exifInfo.Path)
-	}
-	if motionPhotoInfo, err := ValidateMotionPhotoDependencies(options); err != nil {
-		return err
-	} else if motionPhotoInfo != nil {
-		Log(LoggerInfo, "Using MotionPhoto2 from %s", motionPhotoInfo.Path)
-	}
-
-	if options.WriteMetadata || options.VerifyWrites || options.RestoreMOVExtension {
 		if err := InitializeExifTool(); err != nil {
 			return err
 		}
@@ -99,7 +102,7 @@ func Process(
 		Log(LoggerWarn, "%s", warning)
 	}
 
-	report := NewRunReport(sourcePath, outputPath, options)
+	report := NewRunReport(sourcePath, finalOutputRoot, options)
 	if sidecarCount, err := CountJSONSidecars(sourcePath); err != nil {
 		Log(LoggerWarn, "Failed to count JSON sidecars: %v", err)
 	} else {
@@ -121,7 +124,7 @@ func Process(
 			return ctx.Err()
 		}
 
-		record, suspiciousDates := processPlan(outputPath, plan, options, stateStore)
+		record, suspiciousDates := processPlanToRoots(outputPath, finalOutputRoot, plan, options, stateStore)
 		if err := stateStore.Put(record); err != nil {
 			Log(LoggerError, "Failed to persist state for %s: %v", plan.RelativePath, err)
 		}
@@ -133,38 +136,8 @@ func Process(
 		progressCh <- progress
 	}
 
-	motionPhotoCleanupTargets := BuildMotionPhotoCleanupTargets(plans, stateStore)
-	motionPhotoResult := RunMotionPhotoPass(motionPhotoCleanupTargets, options)
-	motionPhotoResult.StandaloneVideoCandidates = len(motionPhotoCleanupTargets)
-	if options.KeepLiveVideo {
-		motionPhotoResult.StandaloneVideosKept = len(motionPhotoCleanupTargets)
-	} else if len(motionPhotoCleanupTargets) > 0 && ShouldCleanupEmbeddedMotionPhotoVideos(motionPhotoResult) {
-		motionPhotoResult.StandaloneVideosDeleted,
-			motionPhotoResult.StandaloneVideosSkipped,
-			motionPhotoResult.CleanupErrors = CleanupEmbeddedMotionPhotoVideos(motionPhotoCleanupTargets)
-	}
-	if motionPhotoResult.Enabled {
-		report.SetMotionPhotoPass(motionPhotoResult)
-		if motionPhotoResult.Error != "" {
-			Log(LoggerError, "Motion photo pass failed: %s", motionPhotoResult.Error)
-		} else {
-			Log(LoggerInfo, "Motion photo pass finished with status %s", motionPhotoResult.Status)
-		}
-		if motionPhotoResult.StandaloneVideoCandidates > 0 && options.KeepLiveVideo {
-			Log(
-				LoggerInfo,
-				"Live video cleanup skipped: %d kept",
-				motionPhotoResult.StandaloneVideosKept,
-			)
-		} else if motionPhotoResult.StandaloneVideoCandidates > 0 && ShouldCleanupEmbeddedMotionPhotoVideos(motionPhotoResult) {
-			Log(
-				LoggerInfo,
-				"Live video cleanup: %d deleted, %d skipped, %d errors",
-				motionPhotoResult.StandaloneVideosDeleted,
-				motionPhotoResult.StandaloneVideosSkipped,
-				motionPhotoResult.CleanupErrors,
-			)
-		}
+	if err := stateStore.Flush(); err != nil {
+		return fmt.Errorf("flush processing state: %w", err)
 	}
 
 	sourceCleanupResult := CleanupSourceRootAfterSuccess(ctx, sourcePath, outputPath, report, options)
@@ -189,7 +162,18 @@ func processPlan(
 	options ProcessOptions,
 	stateStore *StateStore,
 ) (ProcessRecord, []SuspiciousDateFinding) {
+	return processPlanToRoots(outputRoot, outputRoot, plan, options, stateStore)
+}
+
+func processPlanToRoots(
+	workingOutputRoot string,
+	finalOutputRoot string,
+	plan MediaPlan,
+	options ProcessOptions,
+	stateStore *StateStore,
+) (ProcessRecord, []SuspiciousDateFinding) {
 	record := ProcessRecord{
+		SourceID:           options.SourceID,
 		SourcePath:         plan.SourcePath,
 		SourceRelPath:      plan.RelativePath,
 		SidecarPath:        plan.SidecarPath,
@@ -202,18 +186,34 @@ func processPlan(
 		UpdatedAt:          time.Now().UTC(),
 	}
 
-	outputDir, err := ResolveOutputDir(outputRoot, plan, options)
+	finalOutputDir, dateSelection, err := resolveOutputDirWithDateSource(finalOutputRoot, plan, options)
+	if err != nil {
+		record.Status = OperationError
+		record.Error = err.Error()
+		return record, nil
+	}
+	if options.Verbose && dateSelection.Source != "" {
+		Log(
+			LoggerInfo,
+			"Date source %s: %s %s -> %s",
+			plan.RelativePath,
+			dateSelection.Source,
+			dateSelection.Time.UTC().Format(time.RFC3339),
+			filepath.Base(finalOutputDir),
+		)
+	}
+
+	outputName := resolveOutputName(plan, options)
+	finalDestPath := filepath.Join(finalOutputDir, outputName)
+	workingDestPath, err := mapOutputPath(finalOutputRoot, workingOutputRoot, finalDestPath)
 	if err != nil {
 		record.Status = OperationError
 		record.Error = err.Error()
 		return record, nil
 	}
 
-	outputName := resolveOutputName(plan, options)
-	destPath := filepath.Join(outputDir, outputName)
-
-	if previous, ok := stateStore.Get(plan.RelativePath); ok && previous.Successful() &&
-		strings.EqualFold(filepath.Clean(previous.OutputPath), filepath.Clean(destPath)) &&
+	if previous, ok := stateStore.GetForSource(options.SourceID, plan.RelativePath); ok && previous.Successful() &&
+		strings.EqualFold(filepath.Clean(previous.OutputPath), filepath.Clean(finalDestPath)) &&
 		previous.OutputPath != "" && FileExists(previous.OutputPath) {
 		previous.Status = OperationSkippedResume
 		previous.UpdatedAt = time.Now().UTC()
@@ -236,23 +236,37 @@ func processPlan(
 	}
 	record.SourceHash = sourceHash
 
-	if existingHash, samePath := existingFileHash(destPath); samePath {
+	if existingHash, samePath := existingFileHash(finalDestPath); samePath {
 		if existingHash == sourceHash {
-			record.OutputPath = destPath
+			record.OutputPath = finalDestPath
 			record.Status = OperationSkippedExisting
 			return record, detectSuspiciousDates(plan, record.OutputPath)
 		}
-		destPath = MakeUniquePath(destPath)
+		finalDestPath = makeUniqueAcrossRoots(finalDestPath, finalOutputRoot, workingOutputRoot)
+		workingDestPath, err = mapOutputPath(finalOutputRoot, workingOutputRoot, finalDestPath)
+		if err != nil {
+			record.Status = OperationError
+			record.Error = err.Error()
+			return record, nil
+		}
+	} else if FileExists(workingDestPath) {
+		finalDestPath = makeUniqueAcrossRoots(finalDestPath, finalOutputRoot, workingOutputRoot)
+		workingDestPath, err = mapOutputPath(finalOutputRoot, workingOutputRoot, finalDestPath)
+		if err != nil {
+			record.Status = OperationError
+			record.Error = err.Error()
+			return record, nil
+		}
 	}
 
-	suspiciousDates := detectSuspiciousDates(plan, destPath)
+	suspiciousDates := detectSuspiciousDates(plan, finalDestPath)
 
 	if options.Deduplicate {
 		if canonical, ok := stateStore.CanonicalByHash(sourceHash); ok &&
 			canonical.OutputPath != "" &&
-			!strings.EqualFold(filepath.Clean(canonical.OutputPath), filepath.Clean(destPath)) &&
-			FileExists(canonical.OutputPath) {
-			record.OutputPath = destPath
+			!strings.EqualFold(filepath.Clean(canonical.OutputPath), filepath.Clean(finalDestPath)) &&
+			(FileExists(canonical.OutputPath) || FileExists(canonical.StagedPath)) {
+			record.OutputPath = finalDestPath
 			record.DuplicateOf = canonical.OutputPath
 
 			if options.DryRun {
@@ -260,20 +274,24 @@ func processPlan(
 				return record, suspiciousDates
 			}
 
-			if err := EnsureDir(filepath.Dir(destPath)); err != nil {
+			if err := EnsureDir(filepath.Dir(workingDestPath)); err != nil {
 				record.Status = OperationError
 				record.Error = err.Error()
 				return record, suspiciousDates
 			}
 
-			status, err := LinkDuplicate(canonical.OutputPath, destPath, options.UseSymlinks)
-			record.Status = status
-			if err != nil {
-				record.Status = OperationError
-				record.Error = err.Error()
+			if sameOutputRoot(workingOutputRoot, finalOutputRoot) {
+				status, linkErr := LinkDuplicate(canonical.OutputPath, workingDestPath, options.UseSymlinks)
+				record.Status = status
+				if linkErr != nil {
+					record.Status = OperationError
+					record.Error = linkErr.Error()
+				}
+			} else {
+				record.Status = OperationHardlinked
 			}
 			if record.Status != OperationError && options.WriteXMPSidecars && plan.MatchStatus == MatchStatusMatched && plan.Metadata != nil {
-				metadataResult, err := WriteMetadataXMPSidecar(destPath, *plan.Metadata, options.ConflictPolicy)
+				metadataResult, err := WriteMetadataXMPSidecar(workingDestPath, *plan.Metadata, options.ConflictPolicy)
 				record.Conflicts = metadataResult.Conflicts
 				record.MetadataWritten = metadataResult.MetadataWritten
 				record.UsedXMPSidecar = metadataResult.UsedXMPSidecar
@@ -285,19 +303,22 @@ func processPlan(
 		}
 	}
 
-	record.OutputPath = destPath
+	record.OutputPath = finalDestPath
+	if !sameOutputRoot(workingOutputRoot, finalOutputRoot) {
+		record.StagedPath = workingDestPath
+	}
 	if options.DryRun {
 		record.Status = OperationDryRun
 		return record, suspiciousDates
 	}
 
-	if err := EnsureDir(filepath.Dir(destPath)); err != nil {
+	if err := EnsureDir(filepath.Dir(workingDestPath)); err != nil {
 		record.Status = OperationError
 		record.Error = err.Error()
 		return record, suspiciousDates
 	}
 
-	if err := DuplicateFile(plan.SourcePath, destPath); err != nil {
+	if err := DuplicateFile(plan.SourcePath, workingDestPath); err != nil {
 		record.Status = OperationError
 		record.Error = err.Error()
 		return record, suspiciousDates
@@ -305,7 +326,7 @@ func processPlan(
 
 	if (options.WriteMetadata || options.WriteXMPSidecars) && plan.MatchStatus == MatchStatusMatched && plan.Metadata != nil {
 		if options.WriteMetadata {
-			metadataResult, err := ApplyMetadata(destPath, *plan.Metadata, options.ConflictPolicy)
+			metadataResult, err := ApplyMetadata(workingDestPath, *plan.Metadata, options.ConflictPolicy)
 			record.Conflicts = metadataResult.Conflicts
 			record.MetadataWritten = metadataResult.MetadataWritten
 
@@ -314,7 +335,7 @@ func processPlan(
 			}
 
 			if options.VerifyWrites && metadataResult.MetadataWritten {
-				if err := VerifyMetadata(destPath, metadataResult.MetadataPlan); err != nil {
+				if err := VerifyMetadata(workingDestPath, metadataResult.MetadataPlan); err != nil {
 					record.Error = joinProblem(record.Error, fmt.Sprintf("verification failed: %v", err))
 				} else {
 					record.MetadataVerified = true
@@ -323,7 +344,7 @@ func processPlan(
 		}
 
 		if options.WriteXMPSidecars {
-			metadataResult, err := WriteMetadataXMPSidecar(destPath, *plan.Metadata, options.ConflictPolicy)
+			metadataResult, err := WriteMetadataXMPSidecar(workingDestPath, *plan.Metadata, options.ConflictPolicy)
 			if len(record.Conflicts) == 0 {
 				record.Conflicts = metadataResult.Conflicts
 			}
@@ -345,6 +366,40 @@ func processPlan(
 	}
 
 	return record, suspiciousDates
+}
+
+func sameOutputRoot(left string, right string) bool {
+	return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
+}
+
+func mapOutputPath(finalRoot string, workingRoot string, finalPath string) (string, error) {
+	if sameOutputRoot(finalRoot, workingRoot) {
+		return finalPath, nil
+	}
+	rel, err := filepath.Rel(finalRoot, finalPath)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("output path escapes final root: %s", finalPath)
+	}
+	return filepath.Join(workingRoot, rel), nil
+}
+
+func makeUniqueAcrossRoots(path string, finalRoot string, workingRoot string) string {
+	dir := filepath.Dir(path)
+	ext := filepath.Ext(path)
+	base := strings.TrimSuffix(filepath.Base(path), ext)
+	for index := 2; ; index++ {
+		candidate := filepath.Join(dir, fmt.Sprintf("%s (%d)%s", base, index, ext))
+		workingCandidate, err := mapOutputPath(finalRoot, workingRoot, candidate)
+		if err != nil {
+			continue
+		}
+		if !FileExists(candidate) && !FileExists(workingCandidate) {
+			return candidate
+		}
+	}
 }
 
 func existingFileHash(path string) (string, bool) {

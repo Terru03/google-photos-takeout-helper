@@ -48,6 +48,10 @@ type ProcessOptions struct {
 	DryRun                   bool
 	VerifyWrites             bool
 	ConflictPolicy           ConflictPolicy
+	Verbose                  bool
+	RuntimeRoot              string `json:"-"`
+	FinalOutputRoot          string `json:"-"`
+	SourceID                 string `json:"-"`
 }
 
 func DefaultProcessOptions() ProcessOptions {
@@ -213,6 +217,7 @@ type MetadataFieldConflict struct {
 }
 
 type ProcessRecord struct {
+	SourceID           string                  `json:"sourceId,omitempty"`
 	SourcePath         string                  `json:"sourcePath"`
 	SourceRelPath      string                  `json:"sourceRelPath"`
 	SourceHash         string                  `json:"sourceHash,omitempty"`
@@ -221,6 +226,7 @@ type ProcessRecord struct {
 	PartnerPath        string                  `json:"partnerPath,omitempty"`
 	PartnerRelPath     string                  `json:"partnerRelPath,omitempty"`
 	OutputPath         string                  `json:"outputPath,omitempty"`
+	StagedPath         string                  `json:"stagedPath,omitempty"`
 	MatchStatus        MatchStatus             `json:"matchStatus"`
 	MatchStrategy      MatchStrategy           `json:"matchStrategy,omitempty"`
 	MatchCandidates    []string                `json:"matchCandidates,omitempty"`
@@ -233,6 +239,13 @@ type ProcessRecord struct {
 	Conflicts          []MetadataFieldConflict `json:"conflicts,omitempty"`
 	Error              string                  `json:"error,omitempty"`
 	UpdatedAt          time.Time               `json:"updatedAt"`
+}
+
+func (r ProcessRecord) StateKey() string {
+	if r.SourceID == "" {
+		return r.SourceRelPath
+	}
+	return r.SourceID + "|" + r.SourceRelPath
 }
 
 func (r ProcessRecord) Successful() bool {

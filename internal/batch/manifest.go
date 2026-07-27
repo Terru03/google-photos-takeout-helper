@@ -59,7 +59,18 @@ func (m *Manifest) Path() string {
 
 func (m *Manifest) AlreadySuccessful(item ZipItem) bool {
 	entry, ok := m.latest[item.Fingerprint]
-	return ok && isSuccessfulStatus(entry.Status)
+	return ok && entry.WorkflowVersion == currentWorkflowVersion && isSuccessfulStatus(entry.Status)
+}
+
+func (m *Manifest) LegacySuccessfulCount(items []ZipItem) int {
+	count := 0
+	for _, item := range items {
+		entry, ok := m.latest[item.Fingerprint]
+		if ok && entry.WorkflowVersion != currentWorkflowVersion && isSuccessfulStatus(entry.Status) {
+			count++
+		}
+	}
+	return count
 }
 
 func (m *Manifest) LastEntry(item ZipItem) (ManifestEntry, bool) {
@@ -116,14 +127,15 @@ func manifestPath(outputDir string) string {
 
 func manifestEntryFor(item ZipItem, outputDir string, status string) ManifestEntry {
 	return ManifestEntry{
-		ZipName:        item.Name,
-		ZipPath:        item.Path,
-		ZipSize:        item.SizeBytes,
-		ZipModified:    item.ModTime,
-		ZipFingerprint: item.Fingerprint,
-		SourceDrive:    item.SourceDrive,
-		Status:         status,
-		OutputFolder:   outputDir,
+		WorkflowVersion: currentWorkflowVersion,
+		ZipName:         item.Name,
+		ZipPath:         item.Path,
+		ZipSize:         item.SizeBytes,
+		ZipModified:     item.ModTime,
+		ZipFingerprint:  item.Fingerprint,
+		SourceDrive:     item.SourceDrive,
+		Status:          status,
+		OutputFolder:    outputDir,
 	}
 }
 

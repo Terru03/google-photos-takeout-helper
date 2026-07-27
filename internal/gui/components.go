@@ -131,7 +131,7 @@ func progressSection(label string, value float64) fyne.CanvasObject {
 }
 
 func stageRow(active string) fyne.CanvasObject {
-	stages := []string{"Extract", "Metadata", "Deduplicate", "Reports", "Cleanup"}
+	stages := []string{"Extract", "Metadata", "Commit", "Reports", "Motion", "Cleanup"}
 	items := make([]fyne.CanvasObject, 0, len(stages))
 	for _, stage := range stages {
 		if strings.EqualFold(stage, active) {

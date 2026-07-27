@@ -31,6 +31,11 @@ var videoExtensions = map[string]struct{}{
 
 var yearPartRegexp = regexp.MustCompile(`^\d{4}$`)
 
+type folderDateSelection struct {
+	Time   time.Time
+	Source string
+}
+
 func ClearCache() {}
 
 func ClearCacheDir(_ string) {}
@@ -74,7 +79,7 @@ func DuplicateFile(inputPath string, outputPath string) error {
 		return err
 	}
 
-	return destFile.Sync()
+	return nil
 }
 
 func HashFile(path string) (string, error) {
@@ -178,20 +183,64 @@ func CountJSONSidecars(sourcePath string) (int, error) {
 }
 
 func DetectFileMonth(sourcePath string, sidecarPath string) (int, error) {
-	if sidecarPath != "" {
-		metadata, err := ReadJSONMetadata(sidecarPath)
-		if err == nil {
-			if timestamp, err := metadata.BestTimestamp(); err == nil {
-				return int(timestamp.UTC().Month()), nil
-			}
-		}
-	}
-
-	info, err := os.Stat(sourcePath)
+	selection, err := selectFolderDate(MediaPlan{
+		SourcePath:  sourcePath,
+		SidecarPath: sidecarPath,
+	})
 	if err != nil {
 		return 0, err
 	}
-	return int(info.ModTime().Month()), nil
+	return int(selection.Time.UTC().Month()), nil
+}
+
+func selectFolderDate(plan MediaPlan) (folderDateSelection, error) {
+	if timestamp, ok := planPhotoTakenTimestamp(plan); ok {
+		return folderDateSelection{
+			Time:   timestamp,
+			Source: "google-sidecar-photoTakenTime",
+		}, nil
+	}
+
+	if embedded, err := ReadEmbeddedMetadata(plan.SourcePath); err == nil && !embedded.CaptureTime.IsZero() {
+		source := "embedded"
+		if embedded.CaptureSource != "" {
+			source += ":" + embedded.CaptureSource
+		}
+		return folderDateSelection{
+			Time:   embedded.CaptureTime,
+			Source: source,
+		}, nil
+	}
+
+	sourcePath := plan.SourcePath
+	info, err := os.Stat(sourcePath)
+	if err != nil {
+		return folderDateSelection{}, err
+	}
+	return folderDateSelection{
+		Time:   info.ModTime(),
+		Source: "file-modified",
+	}, nil
+}
+
+func planPhotoTakenTimestamp(plan MediaPlan) (time.Time, bool) {
+	if plan.Metadata != nil {
+		if timestamp, err := plan.Metadata.PhotoTakenTimestamp(); err == nil {
+			return timestamp, true
+		}
+	}
+	if plan.SidecarPath == "" {
+		return time.Time{}, false
+	}
+	metadata, err := ReadJSONMetadata(plan.SidecarPath)
+	if err != nil {
+		return time.Time{}, false
+	}
+	timestamp, err := metadata.PhotoTakenTimestamp()
+	if err != nil {
+		return time.Time{}, false
+	}
+	return timestamp, true
 }
 
 func FormatMonthFolderName(month int) string {
@@ -203,24 +252,40 @@ func FormatMonthFolderName(month int) string {
 }
 
 func ResolveOutputDir(outputRoot string, plan MediaPlan, options ProcessOptions) (string, error) {
+	dir, _, err := resolveOutputDirWithDateSource(outputRoot, plan, options)
+	return dir, err
+}
+
+func resolveOutputDirWithDateSource(outputRoot string, plan MediaPlan, options ProcessOptions) (string, folderDateSelection, error) {
+	options = options.Normalized()
 	if options.Flatten {
-		return outputRoot, nil
+		return outputRoot, folderDateSelection{}, nil
 	}
 
-	targetDir := outputRoot
-	if plan.RelativeDir != "" {
-		targetDir = filepath.Join(targetDir, plan.RelativeDir)
+	if !plan.IsYearFolder {
+		targetDir := filepath.Join(outputRoot, "Albums")
+		if plan.RelativeDir != "" {
+			targetDir = filepath.Join(targetDir, plan.RelativeDir)
+		}
+		return targetDir, folderDateSelection{}, nil
 	}
 
-	if !options.MonthSubfolders {
-		return targetDir, nil
+	needsDateLayout := options.MonthSubfolders || options.AlbumMode == AlbumModeTimelineOnly
+	if !needsDateLayout {
+		targetDir := outputRoot
+		if plan.RelativeDir != "" {
+			targetDir = filepath.Join(targetDir, plan.RelativeDir)
+		}
+		return targetDir, folderDateSelection{}, nil
 	}
 
-	month, err := DetectFileMonth(plan.SourcePath, plan.SidecarPath)
+	selection, err := selectFolderDate(plan)
 	if err != nil {
-		return "", err
+		return "", folderDateSelection{}, err
 	}
-	return filepath.Join(targetDir, FormatMonthFolderName(month)), nil
+	targetDir := filepath.Join(outputRoot, fmt.Sprintf("Photos from %04d", selection.Time.UTC().Year()))
+	month := int(selection.Time.UTC().Month())
+	return filepath.Join(targetDir, FormatMonthFolderName(month)), selection, nil
 }
 
 func IsYearFolder(dirName string) (bool, error) {

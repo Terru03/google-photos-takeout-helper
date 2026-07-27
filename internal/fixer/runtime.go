@@ -3,9 +3,12 @@ package fixer
 import (
 	"fmt"
 	"os/exec"
+	"regexp"
 	"runtime/debug"
 	"strings"
 )
+
+var exifToolVersionPattern = regexp.MustCompile(`^\d+(\.\d+)+$`)
 
 type ExifToolInfo struct {
 	Path    string
@@ -28,11 +31,19 @@ func RecoverPanic(component string) {
 }
 
 func ValidateProcessingDependencies(options ProcessOptions) (*ExifToolInfo, error) {
-	options = options.Normalized()
-	if !options.WriteMetadata && !options.VerifyWrites && !options.RestoreMOVExtension {
+	if !needsExifTool(options) {
 		return nil, nil
 	}
 	return DetectExifTool()
+}
+
+func needsExifTool(options ProcessOptions) bool {
+	options = options.Normalized()
+	return options.WriteMetadata ||
+		options.VerifyWrites ||
+		options.RestoreMOVExtension ||
+		options.MonthSubfolders ||
+		options.AlbumMode == AlbumModeTimelineOnly
 }
 
 func DetectExifTool() (*ExifToolInfo, error) {
@@ -46,7 +57,16 @@ func DetectExifTool() (*ExifToolInfo, error) {
 		return nil, fmt.Errorf("ExifTool was found at %s but could not be executed: %w: %s", path, err, strings.TrimSpace(string(output)))
 	}
 
-	version := strings.TrimSpace(string(output))
+	version := ""
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		line = strings.TrimSpace(line)
+		if exifToolVersionPattern.MatchString(line) {
+			version = line
+		}
+	}
+	if version == "" {
+		version = strings.TrimSpace(string(output))
+	}
 	if version == "" {
 		return nil, fmt.Errorf("ExifTool was found at %s but returned an empty version string", path)
 	}

@@ -43,6 +43,7 @@ type guiState struct {
 	outputPath    string
 	workPath      string
 	workPaths     []string
+	stagingPath   string
 	selectedWork  string
 	zipRoots      []string
 	selectedRoot  string
@@ -107,12 +108,32 @@ func Main() {
 		mode:          modeFolder,
 		inputPath:     prefs.LastInputPath,
 		outputPath:    prefs.LastOutputPath,
+		stagingPath:   prefs.LastStagingPath,
+		zipRoots:      append([]string(nil), prefs.ZipRoots...),
+		workPaths:     append([]string(nil), prefs.WorkPaths...),
 		options:       defaults,
 		keepTempOnErr: true,
 		progressPhase: progressEmpty,
 		stage:         "Extract",
 		logAutoScroll: true,
 	}
+	if len(state.zipRoots) == 0 && looksLikeZipSourceFolder(prefs.LastInputPath) {
+		state.zipRoots = []string{prefs.LastInputPath}
+	}
+	if len(state.zipRoots) > 0 {
+		state.mode = modeBatch
+		state.options.AlbumMode = fixer.AlbumModeTimelineOnly
+		state.options.IgnoreAlbums = true
+		state.options.MonthSubfolders = true
+		state.options.CreateMotionPhotos = false
+	}
+	if len(state.workPaths) == 0 && fixer.FileExists(`C:\Takeout_Incoming`) {
+		state.workPaths = []string{`C:\Takeout_Incoming`}
+	}
+	if state.stagingPath == "" {
+		state.stagingPath = `C:\Takeout_Staging`
+	}
+	state.workPath = state.primaryWorkPath()
 
 	fixer.SetLogHandler(func(level fixer.LogLevel, message string) {
 		state.appendLog(fmt.Sprintf("[%s] %s", level, message))
@@ -160,9 +181,12 @@ func (s *guiState) currentOptions() fixer.ProcessOptions {
 
 func (s *guiState) savePreferences() {
 	if err := fixer.SavePreferences(fixer.Preferences{
-		LastInputPath:  s.inputPath,
-		LastOutputPath: s.outputPath,
-		Options:        s.currentOptions(),
+		LastInputPath:   s.inputPath,
+		LastOutputPath:  s.outputPath,
+		LastStagingPath: s.stagingPath,
+		ZipRoots:        append([]string(nil), s.zipRoots...),
+		WorkPaths:       append([]string(nil), s.workPaths...),
+		Options:         s.currentOptions(),
 	}); err != nil {
 		fixer.Log(fixer.LoggerWarn, "Could not save preferences: %v", err)
 	}
@@ -229,6 +253,11 @@ func (s *guiState) addZipRoot(root string) {
 	s.zipRoots = append(s.zipRoots, root)
 	s.selectedRoot = root
 	s.mode = modeBatch
+	s.options.AlbumMode = fixer.AlbumModeTimelineOnly
+	s.options.IgnoreAlbums = true
+	s.options.MonthSubfolders = true
+	s.inputPath = root
+	s.savePreferences()
 	s.refreshTabs(0)
 }
 
@@ -244,6 +273,7 @@ func (s *guiState) removeSelectedRoot() {
 	}
 	s.zipRoots = filtered
 	s.selectedRoot = ""
+	s.savePreferences()
 	s.refreshTabs(0)
 }
 
@@ -266,6 +296,16 @@ func (s *guiState) selectWorkFolder() {
 	s.addWorkRoot(dir)
 }
 
+func (s *guiState) selectStagingFolder() {
+	dir, err := zenity.SelectFile(zenity.Title("Select SSD staging output folder"), zenity.Directory())
+	if err != nil {
+		return
+	}
+	s.stagingPath = dir
+	s.savePreferences()
+	s.refreshTabs(0)
+}
+
 func (s *guiState) addWorkRoot(root string) {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -281,6 +321,7 @@ func (s *guiState) addWorkRoot(root string) {
 	s.selectedWork = root
 	s.workPath = s.primaryWorkPath()
 	s.mode = modeBatch
+	s.savePreferences()
 	s.refreshTabs(0)
 }
 
@@ -297,6 +338,7 @@ func (s *guiState) removeSelectedWorkRoot() {
 	s.workPaths = filtered
 	s.selectedWork = ""
 	s.workPath = s.primaryWorkPath()
+	s.savePreferences()
 	s.refreshTabs(0)
 }
 
@@ -317,7 +359,30 @@ func (s *guiState) moveSelectedWorkRoot(delta int) {
 	}
 	s.workPaths[index], s.workPaths[next] = s.workPaths[next], s.workPaths[index]
 	s.workPath = s.primaryWorkPath()
+	s.savePreferences()
 	s.refreshTabs(0)
+}
+
+func looksLikeZipSourceFolder(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.Contains(strings.ToLower(entry.Name()), "takeout") &&
+			strings.EqualFold(filepath.Ext(entry.Name()), ".zip") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *guiState) normalizedWorkPaths() []string {
@@ -361,6 +426,7 @@ func (s *guiState) runPreflight() {
 			WorkDir:           s.primaryWorkPath(),
 			WorkDirs:          s.normalizedWorkPaths(),
 			OutputDir:         s.outputPath,
+			StagingOutputDir:  s.stagingPath,
 			AutoDrives:        s.outputPath == "" || len(s.normalizedWorkPaths()) == 0,
 			KeepTempOnError:   s.keepTempOnErr,
 			SafetyMarginBytes: 0,
@@ -447,7 +513,12 @@ func (s *guiState) startFolderProcessing() {
 	})
 
 	fixer.SafeGo("gui-folder-progress", func() {
+		lastRefresh := time.Time{}
 		for progress := range progressCh {
+			if time.Since(lastRefresh) < 250*time.Millisecond && progress.Processed < progress.Total {
+				continue
+			}
+			lastRefresh = time.Now()
 			progress := progress
 			fyne.Do(func() {
 				s.fileProcessed = progress.Processed
@@ -468,6 +539,24 @@ func (s *guiState) startFolderProcessing() {
 				s.setErrorNoRefresh("Cancelled immediately. Reopen and resume from the output state if needed.")
 				s.refreshTabs(1)
 				return
+			}
+			if s.currentOptions().CreateMotionPhotos {
+				s.stage = "Motion"
+				mergeReport, mergeErr := fixer.MergeMotionLibrary(ctx, fixer.MotionMergeOptions{
+					LibraryRoot: s.outputPath,
+				})
+				if mergeErr != nil {
+					s.setErrorNoRefresh(mergeErr.Error())
+					s.refreshTabs(1)
+					return
+				}
+				s.appendLog(fmt.Sprintf(
+					"[INFO] Motion merge done: %d merged, %d failed, %d timed out. Report: %s",
+					mergeReport.MergedSuccessfully,
+					mergeReport.FailedMotionPhotoCalls,
+					mergeReport.TimedOutMerges,
+					mergeReport.ReportPath,
+				))
 			}
 			s.progressPhase = progressDone
 			s.loadReportIfAvailable()
@@ -504,6 +593,7 @@ func (s *guiState) startBatchProcessing() {
 			WorkDir:          s.primaryWorkPath(),
 			WorkDirs:         s.normalizedWorkPaths(),
 			OutputDir:        s.outputPath,
+			StagingOutputDir: s.stagingPath,
 			AutoDrives:       s.outputPath == "" || len(s.normalizedWorkPaths()) == 0,
 			KeepTempOnError:  s.keepTempOnErr,
 			Reprocess:        s.reprocess,
@@ -530,6 +620,8 @@ func (s *guiState) startBatchProcessing() {
 						s.stage = "Extract"
 					} else if progress.Phase == "process" {
 						s.stage = "Metadata"
+					} else if progress.Phase == "commit" {
+						s.stage = "Commit"
 					}
 					if progress.FileTotal > 0 {
 						s.fileProcessed = progress.FileProcessed

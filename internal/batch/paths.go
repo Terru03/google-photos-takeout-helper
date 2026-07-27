@@ -16,6 +16,10 @@ func ValidateBatchPaths(zipRoots []string, workDir string, outputDir string, dry
 }
 
 func ValidateBatchPathSet(zipRoots []string, workDirs []string, outputDir string, dryRun bool) error {
+	return ValidateBatchPathSetWithStaging(zipRoots, workDirs, outputDir, "", dryRun)
+}
+
+func ValidateBatchPathSetWithStaging(zipRoots []string, workDirs []string, outputDir string, stagingOutputDir string, dryRun bool) error {
 	if strings.TrimSpace(outputDir) == "" {
 		return fmt.Errorf("output folder is required")
 	}
@@ -30,6 +34,16 @@ func ValidateBatchPathSet(zipRoots []string, workDirs []string, outputDir string
 	if err != nil {
 		return fmt.Errorf("resolve output folder: %w", err)
 	}
+	stagingAbs := ""
+	if strings.TrimSpace(stagingOutputDir) != "" {
+		stagingAbs, err = filepath.Abs(stagingOutputDir)
+		if err != nil {
+			return fmt.Errorf("resolve staging output folder: %w", err)
+		}
+		if pathsOverlap(outputAbs, stagingAbs) {
+			return fmt.Errorf("staging output folder and final output folder must be separate")
+		}
+	}
 	workAbsPaths := make([]string, 0, len(workDirs))
 	for _, workDir := range workDirs {
 		if strings.TrimSpace(workDir) == "" {
@@ -41,6 +55,9 @@ func ValidateBatchPathSet(zipRoots []string, workDirs []string, outputDir string
 		}
 		if pathsOverlap(outputAbs, workAbs) {
 			return fmt.Errorf("work folder and output folder must be separate")
+		}
+		if stagingAbs != "" && pathsOverlap(stagingAbs, workAbs) {
+			return fmt.Errorf("work folder and staging output folder must be separate")
 		}
 		for _, existing := range workAbsPaths {
 			if pathsOverlap(existing, workAbs) {
@@ -68,6 +85,9 @@ func ValidateBatchPathSet(zipRoots []string, workDirs []string, outputDir string
 		}
 		if pathsOverlap(rootAbs, outputAbs) {
 			return fmt.Errorf("ZIP source root and output folder must be separate: %s", root)
+		}
+		if stagingAbs != "" && pathsOverlap(rootAbs, stagingAbs) {
+			return fmt.Errorf("ZIP source root and staging output folder must be separate: %s", root)
 		}
 		if !dryRun {
 			for _, workAbs := range workAbsPaths {

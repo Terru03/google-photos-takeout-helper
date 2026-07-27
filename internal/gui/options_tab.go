@@ -99,7 +99,7 @@ func (s *guiState) buildOptionsTab() fyne.CanvasObject {
 		),
 		card("MOTION & LIVE PHOTOS",
 			checkboxGrid(
-				s.check("Create Windows Motion Photos", &s.options.CreateMotionPhotos),
+				s.check("Merge motion photos after all ZIPs", &s.options.CreateMotionPhotos),
 				s.check("Keep live-video copies", &s.options.KeepLiveVideo),
 			),
 		),
@@ -108,6 +108,7 @@ func (s *guiState) buildOptionsTab() fyne.CanvasObject {
 		card("DEVELOPER / DIAGNOSTIC",
 			checkboxGrid(
 				s.check("Dry run", &s.options.DryRun),
+				s.check("Verbose logs", &s.options.Verbose),
 				keepTemp,
 			),
 			smallText("Logs and reports are written to .gtf beside output."),
@@ -126,9 +127,11 @@ func (s *guiState) albumModeSelect() *widget.Select {
 		case "Timeline only":
 			s.options.AlbumMode = fixer.AlbumModeTimelineOnly
 			s.options.IgnoreAlbums = true
+			s.options.MonthSubfolders = true
 		case "All album folders":
 			s.options.AlbumMode = fixer.AlbumModeAll
 			s.options.IgnoreAlbums = false
+			s.options.MonthSubfolders = true
 		default:
 			s.options.AlbumMode = fixer.AlbumModeUniqueOnly
 			s.options.IgnoreAlbums = false

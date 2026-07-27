@@ -7,9 +7,12 @@ import (
 )
 
 type Preferences struct {
-	LastInputPath  string         `json:"lastInputPath,omitempty"`
-	LastOutputPath string         `json:"lastOutputPath,omitempty"`
-	Options        ProcessOptions `json:"options"`
+	LastInputPath   string         `json:"lastInputPath,omitempty"`
+	LastOutputPath  string         `json:"lastOutputPath,omitempty"`
+	LastStagingPath string         `json:"lastStagingPath,omitempty"`
+	ZipRoots        []string       `json:"zipRoots,omitempty"`
+	WorkPaths       []string       `json:"workPaths,omitempty"`
+	Options         ProcessOptions `json:"options"`
 }
 
 func LoadPreferences() (Preferences, error) {

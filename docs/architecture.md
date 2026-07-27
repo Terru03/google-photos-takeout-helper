@@ -11,8 +11,9 @@ Google Photos Takeout Helper is designed as a deterministic archive-repair tool 
 3. Resolve matches using deterministic filename and metadata heuristics.
 4. Restore metadata to output files and/or XMP sidecars, deduplicate exact copies, and write audit state.
 5. Verify written metadata when enabled.
-6. Optionally run a post-processing MotionPhoto2 sweep to rebuild Windows-viewable Samsung/Google Motion Photos in-place.
-7. Emit machine-readable, human-readable, and CSV review reports under `OUTPUT/.gtf/`.
+6. Commit the completed per-ZIP SSD staging tree to final output.
+7. After all ZIPs, optionally run the resumable MotionPhoto2 merge pass with one timeout per pair.
+8. Emit machine-readable, human-readable, and CSV review reports under `OUTPUT/.gtf/`.
 
 ## Matching Algorithm
 
@@ -59,9 +60,16 @@ Important rules:
 
 ## Motion Photo Strategy
 
-When `CreateMotionPhotos` / `--motion-photos` is enabled, Google Photos Takeout Helper runs [MotionPhoto2](https://github.com/PetrVys/MotionPhoto2) against the repaired output tree using recursive overwrite, incremental mode, and EXIF-based matching.
+Phase 1 never calls MotionPhoto2. It keeps still and motion-video companions as normal output files.
 
-This design choice keeps the main Takeout repair pipeline deterministic while delegating platform-specific live-photo remuxing to a tool that already targets Samsung/Google Motion Photo compatibility for Windows Photos.
+`--merge-motion-pass` scans the finished library, merges one pair per process, applies a timeout, continues after failure, and stores resume state under `.gtf`.
+
+## Performance Strategy
+
+- One persistent ExifTool process serves a whole ZIP instead of starting Perl for every metadata call.
+- State records buffer and sync in batches, then sync on clean close.
+- GUI and file progress logs refresh at bounded intervals.
+- SSD staging keeps metadata rewrites off the final HDD and commits only a completed ZIP.
 
 ## Runtime Paths
 

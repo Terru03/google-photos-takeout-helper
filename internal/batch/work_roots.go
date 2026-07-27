@@ -105,7 +105,9 @@ func workRootStatuses(workDirs []string, drives []DriveInfo, requiredBytes int64
 			RequiredBytes: requiredBytes,
 			Kind:          driveKindForPath(workDir, drives),
 		}
-		freeBytes, err := FreeSpace(workDir)
+		// Preflight may check new work folder before Run makes it.
+		// Use nearest parent for free space.
+		freeBytes, err := freeSpaceForPath(workDir)
 		if err != nil {
 			status.Err = err
 		} else {
