@@ -122,10 +122,7 @@ func Main() {
 	}
 	if len(state.zipRoots) > 0 {
 		state.mode = modeBatch
-		state.options.AlbumMode = fixer.AlbumModeTimelineOnly
-		state.options.IgnoreAlbums = true
-		state.options.MonthSubfolders = true
-		state.options.CreateMotionPhotos = false
+		state.options = applyBatchModeDefaults(state.options)
 	}
 	if len(state.workPaths) == 0 && fixer.FileExists(`C:\Takeout_Incoming`) {
 		state.workPaths = []string{`C:\Takeout_Incoming`}
@@ -144,6 +141,13 @@ func Main() {
 	state.loadReportIfAvailable()
 	state.refreshTabs(0)
 	w.ShowAndRun()
+}
+
+func applyBatchModeDefaults(options fixer.ProcessOptions) fixer.ProcessOptions {
+	options.AlbumMode = fixer.AlbumModeTimelineOnly
+	options.IgnoreAlbums = true
+	options.MonthSubfolders = true
+	return options
 }
 
 func (s *guiState) refreshTabs(selected int) {
