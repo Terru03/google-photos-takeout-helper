@@ -220,6 +220,22 @@ func TestFindTakeoutZipsAcceptsOneZipPath(t *testing.T) {
 	}
 }
 
+func TestShouldSkipZipMatchesNameOrFullPath(t *testing.T) {
+	item := ZipItem{
+		Name: "takeout-005.zip",
+		Path: filepath.Join(`D:\Takeout_Zips`, "takeout-005.zip"),
+	}
+	if !shouldSkipZip(item, []string{"TAKEOUT-005.ZIP"}) {
+		t.Fatal("ZIP name did not match skip list")
+	}
+	if !shouldSkipZip(item, []string{item.Path}) {
+		t.Fatal("ZIP path did not match skip list")
+	}
+	if shouldSkipZip(item, []string{"takeout-006.zip"}) {
+		t.Fatal("wrong ZIP matched skip list")
+	}
+}
+
 func TestLocateGooglePhotosFolderAfterExtract(t *testing.T) {
 	root := t.TempDir()
 	zipPath := filepath.Join(root, "takeout-001.zip")

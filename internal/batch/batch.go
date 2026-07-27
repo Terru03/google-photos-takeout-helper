@@ -150,6 +150,11 @@ func Run(ctx context.Context, options Options) (Result, error) {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
 		}
+		if shouldSkipZip(item, options.SkipZipNames) {
+			result.Skipped++
+			fixer.Log(fixer.LoggerWarn, "Skip requested ZIP: %s", item.Path)
+			continue
+		}
 		if manifest.AlreadySuccessful(item) && !options.Reprocess {
 			result.Skipped++
 			fixer.Log(fixer.LoggerInfo, "Skip already processed ZIP: %s", item.Path)
@@ -240,6 +245,20 @@ func Run(ctx context.Context, options Options) (Result, error) {
 		}
 	}
 	return result, nil
+}
+
+func shouldSkipZip(item ZipItem, names []string) bool {
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if strings.EqualFold(filepath.Base(name), item.Name) ||
+			strings.EqualFold(filepath.Clean(name), filepath.Clean(item.Path)) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateProcessingDependencies(options Options) error {

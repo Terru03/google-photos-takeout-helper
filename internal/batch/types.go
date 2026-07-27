@@ -84,6 +84,7 @@ type ProcessFunc func(
 
 type Options struct {
 	ZipRoots           []string
+	SkipZipNames       []string
 	WorkDir            string
 	WorkDirs           []string
 	OutputDir          string

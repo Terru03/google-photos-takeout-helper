@@ -54,3 +54,12 @@ func TestBuildGlobalSidecarIndexMatchesMediaFromDifferentZip(t *testing.T) {
 		t.Fatalf("cross-ZIP match failed: %#v", plans)
 	}
 }
+
+func TestIsIndexableSidecarNameSkipsGoogleMemoryTitles(t *testing.T) {
+	if isIndexableSidecarName("Takeout/Google Photos/user-generated-memory-titles.json") {
+		t.Fatal("Google memory title data must not enter media sidecar index")
+	}
+	if !isIndexableSidecarName("Takeout/Google Photos/Photos from 2006/PIC_0008.JPG.supplemental-metadata.json") {
+		t.Fatal("photo supplemental metadata must enter media sidecar index")
+	}
+}

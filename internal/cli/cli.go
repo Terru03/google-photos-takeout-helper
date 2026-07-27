@@ -63,6 +63,8 @@ func Main() {
 	oneZip := flag.String("one-zip", "", "Process one Takeout ZIP for a debug or test run")
 	var zipRoots stringListFlag
 	flag.Var(&zipRoots, "zip-root", "Path to a Takeout ZIP file or folder containing Takeout ZIP files; may be repeated")
+	var skipZipNames stringListFlag
+	flag.Var(&skipZipNames, "skip-zip", "ZIP name or full path to index for sidecars but skip during extract; may be repeated")
 	var workPaths stringListFlag
 	flag.Var(&workPaths, "work", "Temporary work folder used for extracting one ZIP at a time; may be repeated")
 	workPool := flag.String("work-pool", "", "Semicolon-separated temporary work folders used when repeated --work flags are not convenient")
@@ -224,6 +226,7 @@ func Main() {
 		}
 		runBatchZIPMode(batch.Options{
 			ZipRoots:           []string(zipRoots),
+			SkipZipNames:       []string(skipZipNames),
 			WorkDir:            firstCLIWorkRoot(workDirs),
 			WorkDirs:           workDirs,
 			OutputDir:          *outputPath,

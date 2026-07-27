@@ -25,6 +25,7 @@ func buildGlobalSidecarIndex(
 		if err := ctx.Err(); err != nil {
 			return nil, warnings, err
 		}
+		fixer.Log(fixer.LoggerInfo, "Index ZIP %d/%d: %s", itemIndex+1, len(items), item.Path)
 		reader, err := zip.OpenReader(item.Path)
 		if err != nil {
 			return nil, warnings, fmt.Errorf("open ZIP for JSON index %s: %w", item.Path, err)
@@ -35,7 +36,7 @@ func buildGlobalSidecarIndex(
 				_ = reader.Close()
 				return nil, warnings, err
 			}
-			if file.FileInfo().IsDir() || !strings.EqualFold(filepath.Ext(file.Name), ".json") {
+			if file.FileInfo().IsDir() || !isIndexableSidecarName(file.Name) {
 				continue
 			}
 
@@ -84,6 +85,13 @@ func buildGlobalSidecarIndex(
 	}
 
 	return index, warnings, nil
+}
+
+func isIndexableSidecarName(name string) bool {
+	if !strings.EqualFold(filepath.Ext(name), ".json") {
+		return false
+	}
+	return !strings.EqualFold(filepath.Base(name), "user-generated-memory-titles.json")
 }
 
 func googlePhotosRelativePath(safeName string) (string, bool) {
