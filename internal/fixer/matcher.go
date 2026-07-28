@@ -11,7 +11,7 @@ import (
 var (
 	duplicateBeforeExtRE  = regexp.MustCompile(`^(.*)\((\d+)\)(\.[^.]+)$`)
 	duplicateAfterExtRE   = regexp.MustCompile(`^(.*)(\.[^.]+)\((\d+)\)$`)
-	trailingDashDigitsRE  = regexp.MustCompile(`^(.*)-(\d+)$`)
+	trailingDashDigitsRE  = regexp.MustCompile(`^(.*)-(\d{1,3})$`)
 	supplementalSidecarRE = regexp.MustCompile(`(?i)^(.*)\.supplemental-metadata(?:\((\d+)\))?\.json$`)
 )
 

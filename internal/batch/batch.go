@@ -116,18 +116,23 @@ func Run(ctx context.Context, options Options) (Result, error) {
 		return result, err
 	}
 
-	if len(zips) > 1 && options.ProcessOptions.SidecarIndex == nil {
-		fixer.Log(fixer.LoggerInfo, "Index Google JSON sidecars across %d ZIP files", len(zips))
-		sidecarIndex, warnings, indexErr := buildGlobalSidecarIndex(ctx, zips, func(completed int, total int, item ZipItem) {
-			emitProgress(options, BatchProgress{
-				CurrentZip:   item.Path,
-				CurrentIndex: completed,
-				Phase:        "index",
-				Completed:    completed,
-				Total:        total,
-				ReportPath:   manifest.Path(),
-			})
-		})
+	if options.ProcessOptions.SidecarIndex == nil {
+		fixer.Log(fixer.LoggerInfo, "Index Google JSON sidecars from cache and %d ZIP files", len(zips))
+		sidecarIndex, warnings, indexErr := buildPersistentSidecarIndex(
+			ctx,
+			persistentSidecarCachePath(options.OutputDir),
+			zips,
+			func(completed int, total int, item ZipItem) {
+				emitProgress(options, BatchProgress{
+					CurrentZip:   item.Path,
+					CurrentIndex: completed,
+					Phase:        "index",
+					Completed:    completed,
+					Total:        total,
+					ReportPath:   manifest.Path(),
+				})
+			},
+		)
 		if indexErr != nil {
 			return result, indexErr
 		}
@@ -140,6 +145,23 @@ func Run(ctx context.Context, options Options) (Result, error) {
 			result.IndexedSidecars,
 			result.SidecarIndexWarnings,
 		)
+		fixer.Log(fixer.LoggerInfo, "Backfill old unmatched media with new JSON sidecars")
+		backfill, backfillErr := fixer.BackfillIndexedSidecars(ctx, options.OutputDir, sidecarIndex, options.ProcessOptions)
+		result.SidecarBackfill = &backfill
+		if backfillErr != nil {
+			return result, fmt.Errorf("sidecar backfill failed: %w", backfillErr)
+		}
+		if backfill.Updated > 0 || backfill.Failed > 0 {
+			fixer.Log(
+				fixer.LoggerInfo,
+				"Sidecar backfill finished: checked=%d matched=%d updated=%d failed=%d report=%s",
+				backfill.Checked,
+				backfill.Matched,
+				backfill.Updated,
+				backfill.Failed,
+				backfill.ReportPath,
+			)
+		}
 	}
 
 	if err := os.MkdirAll(options.OutputDir, 0o755); err != nil {

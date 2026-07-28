@@ -120,6 +120,7 @@ type Result struct {
 	Stopped              bool
 	IndexedSidecars      int
 	SidecarIndexWarnings int
+	SidecarBackfill      *fixer.SidecarBackfillResult
 	Preflight            *PreflightReport
 	AlbumCleanup         *fixer.AlbumCleanupResult
 	MotionMerge          *fixer.MotionMergeReport

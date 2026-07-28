@@ -59,6 +59,32 @@ func TestDiscoverMediaPlanMatchesEditedVariantSidecar(t *testing.T) {
 	}
 }
 
+func TestDiscoverMediaPlanDoesNotStripClockDigits(t *testing.T) {
+	root := t.TempDir()
+	yearDir := filepath.Join(root, "Photos from 2016")
+	if err := os.MkdirAll(yearDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeTestFile(t, filepath.Join(yearDir, "Screenshot_20161105-081039.png"), "image")
+	writeTestFile(
+		t,
+		filepath.Join(yearDir, "Screenshot_20161105-084513.png.supplemental-me.json"),
+		`{"title":"Screenshot_20161105-084513.png","photoTakenTime":{"timestamp":"1478328314"}}`,
+	)
+
+	plans, err := DiscoverMediaPlan(root, ProcessOptions{})
+	if err != nil {
+		t.Fatalf("DiscoverMediaPlan returned error: %v", err)
+	}
+	if len(plans) != 1 {
+		t.Fatalf("expected 1 plan, got %d", len(plans))
+	}
+	if plans[0].MatchStatus != MatchStatusUnmatched {
+		t.Fatalf("clock names must not match, got status=%s sidecar=%s", plans[0].MatchStatus, plans[0].SidecarPath)
+	}
+}
+
 func TestDiscoverMediaPlanMatchesLongFilenameSidecar(t *testing.T) {
 	root := t.TempDir()
 	albumDir := filepath.Join(root, "Photos from 2020")

@@ -63,3 +63,47 @@ func TestIsIndexableSidecarNameSkipsGoogleMemoryTitles(t *testing.T) {
 		t.Fatal("photo supplemental metadata must enter media sidecar index")
 	}
 }
+
+func TestPersistentSidecarCacheKeepsOldZipSidecars(t *testing.T) {
+	root := t.TempDir()
+	cachePath := filepath.Join(root, "output", ".gtf", "sidecars", "index.jsonl")
+	firstZip := filepath.Join(root, "takeout-001.zip")
+	writeTestZip(t, firstZip, map[string]string{
+		"Takeout/Google Photos/Photos from 2006/PIC_0008.JPG.supplemental-metadata.json": `{"title":"PIC_0008.JPG","photoTakenTime":{"timestamp":"1165449600"}}`,
+	})
+	firstInfo, err := os.Stat(firstZip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstItem, err := newZipItem(firstZip, firstInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index, warnings, err := buildPersistentSidecarIndex(context.Background(), cachePath, []ZipItem{firstItem}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warnings != 0 || index.Count() != 1 {
+		t.Fatalf("first cache index warnings=%d count=%d", warnings, index.Count())
+	}
+
+	secondZip := filepath.Join(root, "takeout-002.zip")
+	writeTestZip(t, secondZip, map[string]string{
+		"Takeout/Google Photos/Photos from 2007/PIC_0009.JPG.supplemental-metadata.json": `{"title":"PIC_0009.JPG","photoTakenTime":{"timestamp":"1196985600"}}`,
+	})
+	secondInfo, err := os.Stat(secondZip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondItem, err := newZipItem(secondZip, secondInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index, warnings, err = buildPersistentSidecarIndex(context.Background(), cachePath, []ZipItem{secondItem}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warnings != 0 || index.Count() != 2 {
+		t.Fatalf("second cache index warnings=%d count=%d, want 0 and 2", warnings, index.Count())
+	}
+}
