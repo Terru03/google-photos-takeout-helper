@@ -1,224 +1,373 @@
 # Google Photos Takeout Helper
 
 <p align="center">
-    <img src="images/GoogleTakeoutFixer.png" alt="GoogleTakeoutFixer logo" width="200"/>
+  <img src="images/GoogleTakeoutFixer.png" alt="GoogleTakeoutFixer logo" width="200"/>
 </p>
 
-GoogleTakeoutFixer is a local Google Photos Takeout repair and migration app for large photo libraries. It is the maintained `Terru03/google-photos-takeout-helper` project and keeps the Windows executable name `GoogleTakeoutFixer.exe`.
+**Google Photos Takeout Helper** is a local Google Photos Takeout repair and migration tool for Windows. The maintained executable is **`GoogleTakeoutFixer.exe`**.
 
-It turns messy Google Photos Takeout exports into a cleaner folder library with restored metadata, deterministic media-to-JSON matching, resumable processing, audit reports, verification, and safer workflows for very large split-ZIP exports.
+It is designed for messy and very large Google Photos exports, including split Takeout ZIP archives where a media file and its Google JSON sidecar may be stored in different ZIPs.
 
-## Safety
+The app can restore capture metadata, organise a clean timeline library, deduplicate exact copies, repair misleading file extensions, preserve Motion Photo pairs, verify metadata writes, resume interrupted ZIP batches, and produce detailed audit reports without modifying the original Takeout archives.
 
-- Original ZIP files are never moved, modified, or deleted.
-- Output is written only to `--output`.
-- Temporary extraction happens only under the selected work folder or work pool.
-- Optional SSD staging writes one ZIP to fast storage, then commits it to final output.
-- Batch ZIP mode processes one ZIP at a time by default.
-- Review items stay in reports instead of being hidden.
+## What it does
 
-## Main Features
+### Google metadata matching
 
-- Match media files to Google Takeout JSON sidecars across all selected split ZIPs.
-- Write metadata into photos and videos with ExifTool.
-- Verify written metadata with `--verify`.
-- Deduplicate exact copies safely.
-- Restore `.MOV` extensions when embedded metadata says QuickTime.
-- Report unmatched, ambiguous, suspicious date, conflict, and metadata write/verify records.
-- Resume huge Takeout ZIP batches from `OUTPUT\.gtf\batch\manifest.jsonl`.
-- Run motion-photo merge once, after ZIP work, with timeout and resume.
+- Indexes Google Photos JSON sidecars across **all selected split Takeout ZIPs** before processing.
+- Lets media in one ZIP use its matching Google metadata from another ZIP.
+- Matches duplicate ordinals such as `photo(1).jpg` with the corresponding `(1)` supplemental metadata.
+- Handles exact filename/title matches, Takeout duplicate naming, edited variants and long-name truncation.
+- Uses photo/video partner fallback for Live Photo and Motion Photo pairs.
+- Reports ambiguous matches instead of silently choosing one.
+- Ignores non-media Google JSON such as `user-generated-memory-titles.json` when building the media sidecar index.
+
+### Metadata repair
+
+- Writes Google capture metadata into supported photos and videos using **ExifTool**.
+- Can verify written metadata by reading it back with `--verify`.
+- Supports metadata conflict handling with `prefer-json`, `prefer-embedded`, or `merge`.
+- Can write metadata to the media file, XMP sidecars, both, or neither.
+- If a direct metadata write fails, the tool restores the original media bytes and attempts an **XMP sidecar fallback** instead of leaving a partially modified file.
+- Detects common files whose extension does not match their real content and corrects JPEG, PNG and HEIC names from the file signature.
+- Can restore `.MOV` when embedded metadata identifies Apple QuickTime content.
+
+### Library organisation
+
+Batch mode defaults to a date-based timeline layout with month subfolders.
+
+Date selection is intentionally conservative and uses this order:
+
+1. Google `photoTakenTime.timestamp`, including metadata indexed from another selected Takeout ZIP.
+2. Embedded EXIF/XMP/media creation time.
+3. A valid date encoded in the media filename.
+4. The Google timeline folder year, with `Unknown month` when the year is known but the month is not safe to infer.
+5. File modified time only when no Google timeline year is available.
+
+Albums do not replace the primary timeline date. Album output can be kept separately when wanted.
+
+### Large split-ZIP processing
+
+- Processes Takeout ZIPs sequentially, one ZIP at a time, instead of extracting the entire archive set at once.
+- Supports multiple temporary work folders so the app can choose a suitable location with enough free space.
+- Supports optional **SSD staging output** so metadata work happens on fast storage before a completed ZIP is committed to the final library.
+- Keeps a resumable manifest at `OUTPUT\.gtf\batch\manifest.jsonl`.
+- Automatically skips ZIPs already completed successfully unless `--reprocess` is used.
+- Marks previously interrupted runs and retries them safely.
+- Can deliberately skip extracting a problematic ZIP with `--skip-zip` while still indexing usable JSON sidecars from it.
+- Keeps review items visible rather than treating every imperfect match as a fatal batch failure.
+
+### Motion Photos
+
+Phase 1 preserves the still image and companion `.MOV`/`.MP4` files. It does not invoke MotionPhoto2 while individual ZIPs are being repaired.
+
+After the library is complete, the optional Motion Photo pass can:
+
+- rebuild compatible Samsung/Google Motion Photos using **MotionPhoto2**;
+- process one pair at a time with a configurable timeout;
+- continue after a failed pair;
+- skip already successful pairs on rerun;
+- retry only failed or timed-out pairs;
+- write a separate resume/report file under `.gtf`.
+
+## Safety model
+
+The tool is deliberately conservative.
+
+- Original Takeout ZIP files are never moved, modified, or deleted by batch mode.
+- Output is written only to the selected output or staging folders.
+- Temporary extraction stays inside the selected work folder or work pool.
+- ZIP paths are sanitised to prevent traversal and unsafe Windows names.
+- Exact duplicates are handled deterministically.
+- Ambiguous matches, suspicious dates, conflicts and metadata failures are reported for review.
+- A failed metadata write does not intentionally leave modified media bytes behind.
+- `--dry-run` can audit a library without writing repaired media.
+
+Always keep the original Google Takeout archives until the repaired library and reports have been checked.
+
+## Desktop app
+
+Run `GoogleTakeoutFixer.exe` with no arguments to open the Windows desktop interface.
+
+For a large export, the usual workflow is:
+
+1. Add the folders containing the Google Takeout ZIPs.
+2. Select the final output folder.
+3. Select one or more temporary work folders.
+4. Optionally select a fast SSD staging folder.
+5. Run preflight.
+6. Start the batch.
+7. Review the manifest and reports after processing.
+
+Batch mode keeps the primary output timeline-based by default and preserves a saved Motion Photo setting instead of silently disabling it.
 
 ## Install
 
-1. Download a release from this repository.
-2. Extract the archive.
-3. Run `GoogleTakeoutFixer.exe`.
+If a Windows build is available under **Releases**, download the archive, extract it and run:
 
-Windows SmartScreen may warn on unsigned community builds. Verify release checksums when provided.
-
-Optional Motion Photo rebuilding needs [MotionPhoto2](https://github.com/PetrVys/MotionPhoto2) installed separately or placed beside the app binary.
-
-## Desktop Use
-
-Run `GoogleTakeoutFixer.exe` with no arguments to open the desktop app.
-
-In Batch ZIP mode, add one or more ZIP source folders, choose output, add one or more temporary work folders, run preflight, then start processing.
-
-## CLI Use
-
-The same executable also supports CLI mode when flags are passed.
-
-Extracted folder:
-
-```powershell
-.\GoogleTakeoutFixer.exe --input "D:\Takeout\Google Photos" --output "B:\Google_Photos_Final" --verify
+```text
+GoogleTakeoutFixer.exe
 ```
 
-Audit only:
+Windows SmartScreen may warn about unsigned community builds. Verify the repository and release checksums where provided rather than disabling security protections.
+
+### External tools
+
+**ExifTool** is required when writing or verifying embedded metadata.
+
+**MotionPhoto2** is optional and only required when rebuilding Motion Photos. It can be installed separately, placed beside the app, supplied with `--motionphoto2`, or made available on `PATH`.
+
+## Recommended CLI examples
+
+### Extracted Google Photos folder
 
 ```powershell
-.\GoogleTakeoutFixer.exe --profile audit-only --input "D:\Takeout\Google Photos" --output "B:\Google_Photos_Final"
+.\GoogleTakeoutFixer.exe `
+  --input "D:\Takeout\Google Photos" `
+  --output "B:\Google_Photos_Final" `
+  --profile recommended-safe
 ```
 
-Recommended safe mode:
+### Audit only
 
 ```powershell
-.\GoogleTakeoutFixer.exe --profile recommended-safe --input "D:\Takeout\Google Photos" --output "B:\Google_Photos_Final"
+.\GoogleTakeoutFixer.exe `
+  --profile audit-only `
+  --input "D:\Takeout\Google Photos" `
+  --output "B:\Google_Photos_Final"
 ```
 
-## Huge ZIP Batch Mode
-
-Single work folder:
+### Large split-ZIP export
 
 ```powershell
-.\GoogleTakeoutFixer.exe --batch-zips --zip-root "D:\Takeout Zips" --work "C:\Takeout_Incoming" --output "B:\Google_Photos_Final" --verify
+.\GoogleTakeoutFixer.exe `
+  --batch-zips `
+  --zip-root "D:\Takeout Zips" `
+  --work "C:\Takeout_Work" `
+  --staging-output "C:\Takeout_Staging" `
+  --output "B:\Google_Photos_Final" `
+  --profile recommended-safe
 ```
 
-Multiple work folders:
+### Multiple work folders
 
 ```powershell
-.\GoogleTakeoutFixer.exe --batch-zips --zip-root "D:\Takeout Zips" --work "C:\Takeout_Incoming" --work "E:\Takeout_Incoming" --output "B:\Google_Photos_Final" --verify
+.\GoogleTakeoutFixer.exe `
+  --batch-zips `
+  --zip-root "D:\Takeout Zips" `
+  --work "C:\Takeout_Work" `
+  --work "E:\Takeout_Work" `
+  --output "B:\Google_Photos_Final" `
+  --verify
 ```
 
-SSD staging output:
+You can also use a semicolon-separated pool:
 
 ```powershell
-.\GoogleTakeoutFixer.exe --batch-zips --zip-root "D:\Takeout Zips" --work "C:\Takeout_Work" --staging-output "C:\Takeout_Staging" --output "B:\Google_Photos_Final" --timeline-only --verify
+--work-pool "C:\Takeout_Work;E:\Takeout_Work"
 ```
 
-One ZIP debug run:
+### Preflight only
 
 ```powershell
-.\GoogleTakeoutFixer.exe --one-zip "D:\Takeout Zips\takeout-20260624T210653Z-3-001.zip" --work "C:\Takeout_Work" --staging-output "C:\Takeout_Staging" --output "B:\Google_Photos_Final" --timeline-only --verify
+.\GoogleTakeoutFixer.exe `
+  --batch-zips `
+  --preflight-only `
+  --zip-root "D:\Takeout Zips" `
+  --work "C:\Takeout_Work" `
+  --output "B:\Google_Photos_Final"
 ```
 
-Alternate work pool syntax:
+### Process one ZIP for debugging
 
 ```powershell
-.\GoogleTakeoutFixer.exe --batch-zips --zip-root "D:\Takeout Zips" --work-pool "C:\Takeout_Incoming;E:\Takeout_Incoming" --output "B:\Google_Photos_Final" --verify
+.\GoogleTakeoutFixer.exe `
+  --one-zip "D:\Takeout Zips\takeout-001.zip" `
+  --work "C:\Takeout_Work" `
+  --staging-output "C:\Takeout_Staging" `
+  --output "B:\Google_Photos_Final" `
+  --verify
 ```
 
-Preflight only:
+### Skip extraction of one problematic ZIP
+
+The skipped ZIP is still inspected during the global JSON sidecar indexing phase.
 
 ```powershell
-.\GoogleTakeoutFixer.exe --batch-zips --preflight-only --zip-root "D:\Takeout Zips" --work "C:\Takeout_Incoming" --work "E:\Takeout_Incoming" --output "B:\Google_Photos_Final"
+.\GoogleTakeoutFixer.exe `
+  --batch-zips `
+  --zip-root "D:\Takeout Zips" `
+  --skip-zip "takeout-005.zip" `
+  --work "C:\Takeout_Work" `
+  --output "B:\Google_Photos_Final"
 ```
 
-Multiple work folders help with free space. `--staging-output` gives the larger speed gain when final output is an HDD: metadata work runs on SSD, then completed files commit to `--output`.
+`--skip-zip` may be repeated and accepts either a ZIP filename or full path.
 
-Batch ZIP mode stays sequential unless a future explicit parallel mode proves output state, manifest writes, reports, duplicate handling, and file conflicts are safe.
+## Output profiles
 
-Batch mode defaults to timeline-only output. Timeline year and month come from:
+### `recommended-safe`
 
-1. Google `photoTakenTime.timestamp`, indexed across all selected Takeout ZIPs
-2. embedded EXIF/XMP/media creation time
-3. a valid date in the media filename
-4. the Google timeline folder year, using `Unknown month` when no month is safe
-5. file modified time only when no Google timeline year exists
+Designed for normal migration work:
 
-Albums never name a timeline folder. `--albums-separate` writes albums below `OUTPUT\Albums\`.
+- writes embedded metadata;
+- verifies writes;
+- restores MOV extensions where appropriate;
+- deduplicates exact copies;
+- merges compatible embedded and Google metadata;
+- keeps only useful album copies instead of blindly duplicating the full timeline;
+- never deletes the source automatically.
 
-## Motion Photo Merge Pass
+### `audit-only`
 
-Phase 1 keeps both still images and companion `.MOV`/`.MP4` files. It never calls MotionPhoto2.
+For inspection before committing to a migration:
 
-After all ZIPs finish, run:
+- does not write metadata;
+- does not modify output media;
+- produces an audit plan/report;
+- still performs duplicate and matching analysis.
+
+### `immich`
+
+A migration-oriented profile that:
+
+- writes embedded metadata;
+- also writes XMP sidecars;
+- verifies writes;
+- keeps Live/Motion Photo companion video files;
+- deduplicates exact copies;
+- uses merge conflict handling.
+
+## Metadata modes
+
+Use `--metadata-mode` when you want explicit control:
+
+```text
+file   write embedded metadata
+xmp    write XMP sidecars
+both   write embedded metadata and XMP sidecars
+none   do not write metadata
+```
+
+## Album and layout options
+
+Useful choices include:
+
+```text
+--timeline-only
+--albums-separate
+--album-mode unique-only
+--album-mode timeline-only
+--album-mode all
+--month-subfolders
+--flatten
+--symlink
+--ignore-albums
+```
+
+Some combinations are intentionally rejected when they would produce an unsafe or contradictory layout.
+
+## Motion Photo merge pass
+
+After ZIP processing has completed:
 
 ```powershell
-.\GoogleTakeoutFixer.exe --merge-motion-pass --library "B:\Google_Photos_Final" --motionphoto2 "C:\Tools\motionphoto2.exe"
+.\GoogleTakeoutFixer.exe `
+  --merge-motion-pass `
+  --library "B:\Google_Photos_Final" `
+  --motionphoto2 "C:\Tools\motionphoto2.exe"
 ```
 
-Each pair has a two-minute default timeout. One bad pair does not stop the pass. Successful pairs skip on rerun. Retry failed or timed-out pairs with:
+The default timeout is two minutes per pair.
+
+Retry only failed or timed-out pairs:
 
 ```powershell
-.\GoogleTakeoutFixer.exe --merge-motion-pass --library "B:\Google_Photos_Final" --motionphoto2 "C:\Tools\motionphoto2.exe" --retry-failed-motion
+.\GoogleTakeoutFixer.exe `
+  --merge-motion-pass `
+  --library "B:\Google_Photos_Final" `
+  --motionphoto2 "C:\Tools\motionphoto2.exe" `
+  --retry-failed-motion
 ```
 
-Report:
+The report is written to:
 
 ```text
 OUTPUT\.gtf\reports\motion-merge-report.json
 ```
 
-## Batch Status
+## Batch status and resume
 
-Batch ZIP status is written to:
+Batch state is stored at:
 
 ```text
 OUTPUT\.gtf\batch\manifest.jsonl
 ```
 
-Statuses:
+Typical states are:
 
-- `completed`: ZIP processed cleanly.
-- `completed_with_review`: ZIP processed and report has review items.
-- `failed`: extraction, folder detection, crash, panic, disk/write, or fatal processing error.
-- `interrupted`: previous run stopped before ZIP finished.
+- `completed` - ZIP processed cleanly;
+- `completed_with_review` - processing finished but review items were recorded;
+- `failed` - a fatal extraction, processing, disk or write failure occurred;
+- `interrupted` - a previous run stopped before the ZIP completed.
 
-Completed and `completed_with_review` ZIPs are skipped on rerun. Use `--reprocess` only when you want to process them again.
-
-Review items do not fail the whole ZIP:
-
-- unmatched files
-- ambiguous matches
-- suspicious dates
-- metadata conflicts
-- metadata write or report row errors recorded in the report
-
-Fatal failures still fail the ZIP:
-
-- ZIP extraction failure
-- process crash, panic, or unhandled fatal error
-- cannot locate `Takeout\Google Photos` or `Google Photos`
-- disk or write failure
-
-After `completed` or `completed_with_review`, the selected `gtf-zip-*` temp folder is deleted. On true failure, temp folders are kept only when `--keep-temp-on-error` is used.
-
-## Path Safety
-
-ZIP extraction sanitizes each path component for Windows:
-
-- rejects absolute paths, drive names, `.`, `..`, and traversal
-- trims trailing spaces and dots
-- replaces `< > : " | ? *` and control characters with `_`
-- protects reserved names such as `CON`, `PRN`, `AUX`, `NUL`, `COM1` to `COM9`, and `LPT1` to `LPT9`
-- keeps the relative `Takeout\Google Photos\...` structure when safe
+Completed ZIPs are skipped on rerun. Failed or interrupted work can be retried without starting the whole archive again.
 
 ## Reports
 
-Runtime files are under `OUTPUT\.gtf\`:
+Runtime state and reports live under:
 
-- `state.jsonl`: resumable processing state
-- `batch\manifest.jsonl`: ZIP batch status and selected work root/temp folder
-- `batch\preflight_latest.txt`: latest preflight summary
-- `reports\latest.txt`: human report
-- `reports\latest.json`: machine-readable report
-- `reports\suspicious_dates.csv`: suspicious date rows
-- `logs\*.txt`: run logs
-- `reports\motion-merge-report.json`: separate motion merge results
+```text
+OUTPUT\.gtf\
+```
 
-## Development
+Important files include:
+
+```text
+state.jsonl
+batch\manifest.jsonl
+batch\preflight_latest.txt
+reports\latest.txt
+reports\latest.json
+reports\suspicious_dates.csv
+reports\motion-merge-report.json
+logs\*.txt
+```
+
+Reports can include unmatched files, ambiguous sidecar matches, suspicious dates, metadata conflicts, metadata write/verification problems and other review items.
+
+## Build from source
+
+Requirements:
+
+- Go
+- GCC/MinGW on Windows for the desktop build
+- ExifTool for metadata-writing workflows
+
+Run tests:
 
 ```powershell
-# Run tests
 go test ./...
+```
 
-# Build one Windows executable
+Build the Windows application:
+
+```powershell
 .\scripts\build-windows.ps1
 ```
 
-The build script cleans `dist` and writes only:
+The build script writes:
 
 ```text
 dist\GoogleTakeoutFixer.exe
 ```
 
-## Credits
+## Project background
 
-This project began as a fork of [`feloex/GoogleTakeoutFixer`](https://github.com/feloex/GoogleTakeoutFixer). It now carries its own matching, deduplication, state, reporting, verification, batch ZIP, GUI, and migration workflow code.
+This project began as a fork of [`feloex/GoogleTakeoutFixer`](https://github.com/feloex/GoogleTakeoutFixer) and has since been expanded with its current split-ZIP indexing, deterministic matching, resumable batch processing, SSD staging, metadata verification/fallback, reporting, GUI workflow and Motion Photo migration pipeline.
 
-Metadata work uses [ExifTool](https://exiftool.org/) by Phil Harvey.
+Metadata processing uses [ExifTool](https://exiftool.org/) by Phil Harvey. Optional Motion Photo rebuilding uses [MotionPhoto2](https://github.com/PetrVys/MotionPhoto2).
 
-## Disclaimer
+## Licence
 
-Always keep a backup of your original Google Takeout files and review reports before deleting any source archive.
+This project is distributed under the **GNU General Public License v3.0 or later**. See [`LICENSE`](LICENSE).
