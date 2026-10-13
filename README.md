@@ -103,13 +103,35 @@ Batch mode keeps the primary output timeline-based by default and preserves a sa
 
 ## Install
 
-If a Windows build is available under **Releases**, download the archive, extract it and run:
+Packaged application downloads belong on the
+[Releases page](https://github.com/Terru03/google-photos-takeout-helper/releases).
+No application release is currently published here. Until one is published,
+build the maintained Windows executable from source:
 
-```text
-GoogleTakeoutFixer.exe
+```powershell
+git clone https://github.com/Terru03/google-photos-takeout-helper.git
+cd google-photos-takeout-helper
+go test ./internal/batch ./internal/fixer ./internal/cli
+.\scripts\build-windows.ps1
+.\dist\GoogleTakeoutFixer.exe
 ```
 
-Windows SmartScreen may warn about unsigned community builds. Verify the repository and release checksums where provided rather than disabling security protections.
+Use **Go 1.25.5 or newer** (the version in [go.mod](go.mod)) and **GCC/MinGW on
+PATH** for the Windows desktop build. Install ExifTool before metadata-writing
+workflows; its requirement is described below. The [build script](scripts/build-windows.ps1)
+writes `dist/GoogleTakeoutFixer.exe` and recreates its selected output directory,
+so keep original media and unrelated files outside `dist/`.
+
+The former root `Downloads.zip` was a saved browser-page archive, not an app
+installer. It has been removed from the current source tree. The optional
+`MotionPhoto2_Windows_v2.7.7.zip` supplies a separate Motion Photo tool, not the
+GoogleTakeoutFixer application.
+
+When a packaged release is published, choose its named `GoogleTakeoutFixer`
+Windows archive and verify `SHA256SUMS.txt` before extracting it. Unsigned builds
+may prompt Windows SmartScreen; retain security protections. See
+[build-from-source instructions](#build-from-source) and
+[troubleshooting](docs/troubleshooting.md) for setup details.
 
 ### External tools
 
