@@ -9,3 +9,7 @@ logs/
 *.exe
 dist/
 .gomodcache/
+
+# Local browser/download archives are not application packages.
+Downloads.zip
+.cache/
