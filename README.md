@@ -103,10 +103,14 @@ Batch mode keeps the primary output timeline-based by default and preserves a sa
 
 ## Install
 
-Packaged application downloads belong on the
-[Releases page](https://github.com/Terru03/google-photos-takeout-helper/releases).
-No application release is currently published here. Until one is published,
-build the maintained Windows executable from source:
+For Windows x64, download `GoogleTakeoutFixer_Windows_x64.zip` from
+[Releases](https://github.com/Terru03/google-photos-takeout-helper/releases).
+Verify its hash against `SHA256SUMS.txt`, extract the entire ZIP, and open
+`GoogleTakeoutFixer.exe`. Keep `exiftool.exe` and `exiftool_files` beside the app.
+The desktop interface needs an OpenGL-capable graphics driver. Use the CLI
+examples below on headless systems and VMs without OpenGL support.
+
+To build the Windows executable from source:
 
 ```powershell
 git clone https://github.com/Terru03/google-photos-takeout-helper.git
@@ -127,15 +131,15 @@ installer. It has been removed from the current source tree. The optional
 `MotionPhoto2_Windows_v2.7.7.zip` supplies a separate Motion Photo tool, not the
 GoogleTakeoutFixer application.
 
-When a packaged release is published, choose its named `GoogleTakeoutFixer`
-Windows archive and verify `SHA256SUMS.txt` before extracting it. Unsigned builds
-may prompt Windows SmartScreen; retain security protections. See
+Unsigned builds may prompt Windows SmartScreen. See
 [build-from-source instructions](#build-from-source) and
 [troubleshooting](docs/troubleshooting.md) for setup details.
 
 ### External tools
 
-**ExifTool** is required when writing or verifying embedded metadata.
+**ExifTool** is required when writing or verifying embedded metadata. The Windows
+x64 release includes it. Source builds and other release archives need a
+separate [ExifTool installation](https://exiftool.org/install.html).
 
 **MotionPhoto2** is optional and only required when rebuilding Motion Photos. It can be installed separately, placed beside the app, supplied with `--motionphoto2`, or made available on `PATH`.
 

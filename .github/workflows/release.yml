@@ -8,7 +8,7 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   APP_NAME: GoogleTakeoutFixer
@@ -23,7 +23,7 @@ jobs:
         include:
           - { name: Linux_x64,     runs-on: ubuntu-latest,    goos: linux,   goarch: amd64, cc: "",                      archive: tar.gz }
           - { name: Linux_arm64,   runs-on: ubuntu-24.04-arm, goos: linux,   goarch: arm64, cc: "",                      archive: tar.gz }
-          - { name: Windows_x64,   runs-on: ubuntu-latest,    goos: windows, goarch: amd64, cc: x86_64-w64-mingw32-gcc,  archive: zip }
+          - { name: Windows_x64,   runs-on: windows-2025,    goos: windows, goarch: amd64, cc: "",                      archive: zip }
           - { name: Windows_arm64, runs-on: ubuntu-latest,    goos: windows, goarch: arm64, cc: aarch64-w64-mingw32-gcc, archive: zip }
 
     steps:
@@ -36,9 +36,14 @@ jobs:
         if: matrix.goos == 'linux'
         run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev
 
-      - name: Install Windows x64 deps
+      - name: Build and test bundled Windows x64 release
         if: matrix.name == 'Windows_x64'
-        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 zip
+        shell: pwsh
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          ./scripts/package-windows-release.ps1 -Version $env:VERSION
+          Move-Item -LiteralPath 'dist/GoogleTakeoutFixer_Windows_x64.zip' -Destination .
 
       - name: Install Windows arm64 deps
         if: matrix.name == 'Windows_arm64'
@@ -56,6 +61,7 @@ jobs:
         run: echo "CC=${{ matrix.cc }}" >> $GITHUB_ENV
 
       - name: Build & Bundle
+        if: matrix.name != 'Windows_x64'
         env:
           VERSION: ${{ github.ref_name }}
         run: |
@@ -120,6 +126,8 @@ jobs:
 
   release:
     name: Release
+    permissions:
+      contents: write
     needs: [build, build-macos]
     runs-on: ubuntu-latest
     steps:
