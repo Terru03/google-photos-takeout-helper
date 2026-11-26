@@ -45,13 +45,13 @@ Do not put the work folder inside the output folder. Do not put the output folde
 Run preflight before extracting or repairing anything.
 
 ```powershell
-.\gtf-cli.exe --batch-zips --preflight-only --zip-root "D:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final"
+.\GoogleTakeoutFixer.exe --batch-zips --preflight-only --zip-root "D:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final"
 ```
 
 If your ZIPs are split across multiple drives or folders, repeat `--zip-root`:
 
 ```powershell
-.\gtf-cli.exe --batch-zips --preflight-only --zip-root "D:\Takeout_Zips" --zip-root "F:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final"
+.\GoogleTakeoutFixer.exe --batch-zips --preflight-only --zip-root "D:\Takeout_Zips" --zip-root "F:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final"
 ```
 
 Review:
@@ -65,7 +65,7 @@ OUTPUT\.gtf\batch\preflight_latest.txt
 A dry run extracts one ZIP at a time and writes reports without writing repaired media.
 
 ```powershell
-.\gtf-cli.exe --batch-zips --zip-root "D:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final" --dry-run
+.\GoogleTakeoutFixer.exe --batch-zips --zip-root "D:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final" --dry-run
 ```
 
 Use this to check matching quality, suspicious dates, and folder layout before a real run.
@@ -83,7 +83,7 @@ Use `--verify` when you want the tool to read metadata back with ExifTool after 
 Use the same command again:
 
 ```powershell
-.\gtf-cli.exe --batch-zips --zip-root "D:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final" --verify
+.\GoogleTakeoutFixer.exe --batch-zips --zip-root "D:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final" --verify
 ```
 
 Completed ZIPs are skipped using:

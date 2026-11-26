@@ -117,7 +117,7 @@ Requirements:
 Recommended safe command:
 
 ```powershell
-.\gtf-cli.exe --input "D:\Takeout\Google Photos" --output "B:\Google_Photos_Final" --motion-photos --keep-live-video --verify
+.\GoogleTakeoutFixer.exe --input "D:\Takeout\Google Photos" --output "B:\Google_Photos_Final" --motion-photos --keep-live-video --verify
 ```
 
 Review the report for:

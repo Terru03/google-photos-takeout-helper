@@ -23,4 +23,6 @@ This keeps development builds simple while avoiding manual source edits during r
 
 ## Binary names
 
-The module path and repo identity are `github.com/Terru03/google-photos-takeout-helper`. Release archives include the desktop app and `gtf-cli`. The desktop binary keeps the legacy `GoogleTakeoutFixer` name for now so existing shortcuts, scripts, and bundled dependency layouts do not break during the rebrand.
+The module path and repo identity are `github.com/Terru03/google-photos-takeout-helper`. The `GoogleTakeoutFixer` release binary opens the desktop interface when launched without arguments and runs as a CLI when given arguments.
+
+Build the Windows x64 release archive locally with `./scripts/package-windows-release.ps1 -Version v1.0.0`. The script verifies the upstream ExifTool ZIP against its pinned SHA-256, packages the full runtime, and repairs a synthetic photo from the extracted package before saving the archive in `dist`.

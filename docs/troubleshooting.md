@@ -194,7 +194,7 @@ Fix:
 Example:
 
 ```powershell
-.\gtf-cli.exe --batch-zips --preflight-only --zip-root "D:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final"
+.\GoogleTakeoutFixer.exe --batch-zips --preflight-only --zip-root "D:\Takeout_Zips" --work "C:\GTF_Work" --output "B:\Google_Photos_Final"
 ```
 
 ## Output folder inside input folder mistakes

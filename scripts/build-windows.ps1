@@ -1,6 +1,8 @@
 param(
     [string]$OutputDir = ".\dist",
-    [string]$ModuleCacheDir = ".\.gomodcache"
+    [string]$ModuleCacheDir = ".\.gomodcache",
+    [ValidatePattern('^(dev|v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?)$')]
+    [string]$Version = "dev"
 )
 
 $ErrorActionPreference = "Stop"
@@ -58,9 +60,15 @@ if (Test-Path $OutputDir) {
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
 Write-Host "Building GoogleTakeoutFixer.exe..."
-& $goExe build -o (Join-Path $OutputDir "GoogleTakeoutFixer.exe") .\cmd
-if ($LASTEXITCODE -ne 0) {
-    throw "Build failed with exit code $LASTEXITCODE"
+Push-Location -LiteralPath $repoRoot
+try {
+    $linkerFlags = "-X github.com/Terru03/google-photos-takeout-helper/internal/version.Tag=$Version"
+    & $goExe build -trimpath -ldflags $linkerFlags -o (Join-Path $OutputDir "GoogleTakeoutFixer.exe") .\cmd
+    if ($LASTEXITCODE -ne 0) {
+        throw "Build failed with exit code $LASTEXITCODE"
+    }
+} finally {
+    Pop-Location
 }
 
 Write-Host "Build completed in $OutputDir"
