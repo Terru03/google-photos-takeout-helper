@@ -614,6 +614,22 @@ func TestResolveWorkDirsDoesNotDuplicateLegacyWorkDir(t *testing.T) {
 	}
 }
 
+func TestShouldDetectDrivesOnlyForAutomaticSelection(t *testing.T) {
+	if shouldDetectDrives(Options{
+		ZipRoots:  []string{`D:\Takeout_Zips`},
+		WorkDir:   `C:\Takeout_Incoming`,
+		OutputDir: `B:\Google_Photos_Final`,
+	}) {
+		t.Fatal("explicit paths must not start Windows drive scan")
+	}
+	if !shouldDetectDrives(Options{AutoDrives: true}) {
+		t.Fatal("auto-drive mode must scan Windows drives")
+	}
+	if !shouldDetectDrives(Options{AskOnAmbiguous: true}) {
+		t.Fatal("ask mode must scan Windows drives")
+	}
+}
+
 func TestRunCompletesWithReviewCleansTempAndSkipsRerun(t *testing.T) {
 	root := t.TempDir()
 	zipRoot := filepath.Join(root, "zips")

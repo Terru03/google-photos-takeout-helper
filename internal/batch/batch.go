@@ -34,7 +34,7 @@ func Run(ctx context.Context, options Options) (Result, error) {
 		return result, err
 	}
 
-	drives, driveErr := DetectDrives()
+	drives, driveErr := detectDrivesForOptions(options)
 	if driveErr != nil {
 		fixer.Log(fixer.LoggerWarn, "Drive scan failed: %v", driveErr)
 	} else {

@@ -16,7 +16,7 @@ func Preflight(options Options) (PreflightReport, error) {
 		return PreflightReport{}, err
 	}
 
-	drives, driveErr := DetectDrives()
+	drives, driveErr := detectDrivesForOptions(options)
 	if driveErr != nil {
 		fixer.Log(fixer.LoggerWarn, "Drive scan failed: %v", driveErr)
 	}

@@ -23,6 +23,17 @@ type psDrive struct {
 	MediaType  string `json:"MediaType"`
 }
 
+func shouldDetectDrives(options Options) bool {
+	return options.AutoDrives || options.AskOnAmbiguous
+}
+
+func detectDrivesForOptions(options Options) ([]DriveInfo, error) {
+	if !shouldDetectDrives(options) {
+		return nil, nil
+	}
+	return DetectDrives()
+}
+
 func DetectDrives() ([]DriveInfo, error) {
 	if runtime.GOOS != "windows" {
 		return nil, fmt.Errorf("drive scan is only available on Windows")
