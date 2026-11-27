@@ -1,0 +1,143 @@
+You are working in my private repo Terru03/google-photos-takeout-helper.
+
+Important correction:
+I DO want motion photo merging, but it should NOT happen during each ZIP extraction/processing step.
+
+The current workflow tries to merge motion photos while processing a ZIP, and it can get stuck around 82%. That makes the whole 67-ZIP Takeout run fragile.
+
+Change the app to use a staged workflow:
+
+PHASE 1: Build clean organised library
+- Process all ZIPs one by one.
+- Extract each ZIP to temp.
+- Read media + JSON sidecars.
+- Write final output organised by real Date Taken.
+- Copy/keep the still photo and companion .MOV/.MP4 motion video files if they belong together.
+- Do NOT merge motion photos in this phase.
+- Do NOT call motionphoto2 in this phase.
+- Do NOT fail because motionphoto2 is missing in this phase.
+- Clean temp after each successful/completed_with_review ZIP.
+- Original ZIPs must never be moved, modified, or deleted.
+
+PHASE 2: Motion photo merge pass
+After all ZIPs have been processed and the final organised output exists, run a separate merge pass.
+
+Add a CLI mode like:
+
+GoogleTakeoutFixer.exe --merge-motion-pass --input "B:\Google_Photos_Final" --output "B:\Google_Photos_Final" --motionphoto2 "path\to\motionphoto2.exe"
+
+or, if better:
+
+GoogleTakeoutFixer.exe --merge-motion-pass --library "B:\Google_Photos_Final"
+
+Required merge-pass behaviour:
+- Scan the already organised final library.
+- Detect still image + companion motion video pairs.
+- Merge them into Windows-viewable motion photos.
+- Do not redo ZIP extraction.
+- Do not redo full Takeout processing.
+- Do not touch original ZIPs.
+- If one merge fails or hangs, skip that pair, log it, and continue.
+- Add timeout per motion-photo merge, for example 2 minutes per pair.
+- Write a merge report:
+  output\.gtf\reports\motion-merge-report.json
+
+The merge report should include:
+- total candidate pairs
+- merged successfully
+- skipped because missing still
+- skipped because missing video
+- failed motionphoto2 calls
+- timed out merges
+- output path for each merged item
+- source still/video paths
+
+PHASE 3: Resume and retry
+Add resume support for the merge pass:
+- already merged pairs should be skipped
+- failed/timed-out pairs can be retried with --retry-failed-motion
+- do not reprocess successful merges
+
+Date sorting fix:
+The main organised library must use Date Taken, not ZIP/file modified date.
+
+Date priority:
+1. Google sidecar photoTakenTime.timestamp
+2. Embedded EXIF/XMP/media creation date
+3. File modified date only as last fallback
+
+Do not put a file in July just because the ZIP/file modified date is July if embedded Date Taken is February.
+
+Album/named folder handling:
+Google Takeout has album folders and named folders. Do not let album folder names decide the timeline folder.
+
+Add clear options:
+- --timeline-only: organise primary output only by Date Taken
+- --albums-separate: optionally preserve albums under output\Albums\
+- default for huge Takeout should be timeline-only or clearly selectable
+
+If a file appears in both timeline and album folders:
+- timeline output is primary
+- avoid duplicate copies where possible
+- albums should not pollute the main timeline structure
+
+Batch ZIP behaviour:
+- Process one ZIP at a time.
+- Add a one-ZIP mode for debugging:
+
+GoogleTakeoutFixer.exe --one-zip "D:\Takeout Zips\takeout-20260624T210653Z-3-001.zip" --work "C:\Takeout_Incoming" --output "B:\Google_Photos_Final" --timeline-only --verify
+
+- Add/respect completed_with_review status.
+- Do not fail whole ZIPs just because unmatched/ambiguous/review counts exist.
+- Only true failures should fail the ZIP.
+
+Preflight:
+Preflight should clearly show:
+- ZIP count
+- work folder/free space
+- output folder/free space
+- whether motion merge is enabled
+- whether motionphoto2 is found, but only required if merge pass is requested
+
+Single EXE:
+Build only:
+
+dist\GoogleTakeoutFixer.exe
+
+No patched/old/debug extra exe files.
+
+Tests:
+Add tests for:
+- Phase 1 does not call motionphoto2
+- Phase 1 keeps/copies motion companion videos for later merge
+- Phase 2 merge pass scans final library
+- merge timeout skips one pair and continues
+- merge report is written
+- already merged pairs are skipped on rerun
+- Date Taken beats file modified date
+- album folders do not affect timeline output
+- one-ZIP mode works
+- completed_with_review skips on rerun
+
+Run tests, build the exe, commit, and push to main.
+
+Do not run the real 67-ZIP job as a test. Use small synthetic/sample ZIPs.
+
+Add SSD staging output mode.
+
+I want to use my C: SSD for temporary output while processing each ZIP, then commit the completed ZIP result to the final B: HDD output only after that ZIP finishes successfully.
+
+Target command:
+GoogleTakeoutFixer.exe --batch-zips --zip-root "D:\Takeout Zips" --work "C:\Takeout_Work" --staging-output "C:\Takeout_Staging" --output "B:\Google_Photos_Final" --timeline-only --verify
+
+Required behaviour:
+- Original ZIPs stay untouched.
+- Extract temp files to --work.
+- Write this ZIP’s processed output first to --staging-output.
+- After the ZIP completes successfully or completed_with_review, copy/move the staged result into --output.
+- Keep master manifest/reports/state in the final --output folder, not only in staging.
+- Do not lose duplicate detection or resume state between ZIPs.
+- If commit to final output fails, keep staging folder and mark ZIP failed.
+- If commit succeeds, delete only that ZIP’s staging folder and temp extraction folder.
+- Do not manually require me to move files between C and B.
+- Add tests for successful staging commit, failed commit, resume/skip after commit, and cleanup.

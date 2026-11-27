@@ -127,9 +127,9 @@ writes `dist/GoogleTakeoutFixer.exe` and recreates its selected output directory
 so keep original media and unrelated files outside `dist/`.
 
 The former root `Downloads.zip` was a saved browser-page archive, not an app
-installer. It has been removed from the current source tree. The optional
-`MotionPhoto2_Windows_v2.7.7.zip` supplies a separate Motion Photo tool, not the
-GoogleTakeoutFixer application.
+installer. It has been removed from the current source tree. MotionPhoto2 is a
+separate tool and is no longer bundled in this repository; download it from the
+[MotionPhoto2 releases](https://github.com/PetrVys/MotionPhoto2/releases).
 
 Unsigned builds may prompt Windows SmartScreen. See
 [build-from-source instructions](#build-from-source) and

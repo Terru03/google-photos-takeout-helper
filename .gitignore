@@ -13,3 +13,12 @@ dist/
 # Local browser/download archives are not application packages.
 Downloads.zip
 .cache/
+
+# Local logs, backups and scratch files
+*.log
+*.bak
+.tmp-*
+
+# Third-party and generated archives; download these from their own sources
+MotionPhoto2_Windows_*.zip
+automation/TakeoutQueuePackage.zip
