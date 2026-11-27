@@ -6,6 +6,7 @@ require (
 	fyne.io/fyne/v2 v2.7.2
 	github.com/bradfitz/latlong v0.0.0-20170410180902-f3db6d0dff40
 	github.com/ncruces/zenity v0.10.14
+	golang.org/x/sys v0.30.0
 )
 
 require (
@@ -43,7 +44,6 @@ require (
 	github.com/yuin/goldmark v1.7.8 // indirect
 	golang.org/x/image v0.24.0 // indirect
 	golang.org/x/net v0.35.0 // indirect
-	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/text v0.22.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
