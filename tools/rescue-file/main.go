@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	coarseBlock  = int64(64 * 1024)
-	reverseBlock = int64(64 * 1024)
+	coarseBlock  = int64(64 * 1024 * 1024)
+	reverseBlock = int64(64 * 1024 * 1024)
 	saveEvery    = int64(256 * 1024 * 1024)
 )
 
