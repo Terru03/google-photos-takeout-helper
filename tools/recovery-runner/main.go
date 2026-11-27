@@ -17,6 +17,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/Terru03/google-photos-takeout-helper/tools/internal/blocksize"
 )
 
 var errDeferZip = errors.New("defer ZIP")
@@ -47,6 +49,9 @@ type config struct {
 	stopGrace   time.Duration
 	readTimeout time.Duration
 	motionLimit time.Duration
+	// Optional rescue-file block sizes; empty means use its defaults.
+	coarseBlock  string
+	reverseBlock string
 }
 
 type zipJob struct {
@@ -115,6 +120,8 @@ func main() {
 	flag.DurationVar(&cfg.zipLimit, "rescue-zip-limit", 45*time.Minute, "defer ZIP after total rescue time")
 	flag.DurationVar(&cfg.stopGrace, "rescue-stop-grace", 2*time.Minute, "time allowed for a stopped rescue process to exit")
 	flag.DurationVar(&cfg.readTimeout, "rescue-read-timeout", 90*time.Second, "timeout passed to one rescue read")
+	flag.StringVar(&cfg.coarseBlock, "rescue-coarse-block", "", "rescue-file -coarse-block, 64K to 1G (default: rescue-file default, 64M)")
+	flag.StringVar(&cfg.reverseBlock, "rescue-reverse-block", "", "rescue-file -reverse-block, 64K to 1G (default: same as coarse block)")
 	flag.DurationVar(&cfg.motionLimit, "motion-pair-timeout", 2*time.Minute, "maximum time for one MotionPhoto2 pair")
 	flag.Parse()
 
@@ -172,6 +179,9 @@ func run(ctx context.Context, cfg config) error {
 	}
 	if cfg.readTimeout <= 0 {
 		return errors.New("rescue-read-timeout must be positive")
+	}
+	if err := validateBlockFlags(&cfg); err != nil {
+		return err
 	}
 	if cfg.motionLimit <= 0 {
 		return errors.New("motion-pair-timeout must be positive")
@@ -481,6 +491,54 @@ func runDeferredQueue(
 	return result, nil
 }
 
+// buildRescueArgs builds the rescue-file command line. Block sizes are forwarded
+// only when set, so rescue-file keeps its own default otherwise.
+func buildRescueArgs(cfg config, source string, target string, reverse bool) []string {
+	args := []string{
+		"--source", source,
+		"--target", target,
+		"--read-timeout", cfg.readTimeout.String(),
+	}
+	if cfg.coarseBlock != "" {
+		args = append(args, "--coarse-block", cfg.coarseBlock)
+	}
+	if cfg.reverseBlock != "" {
+		args = append(args, "--reverse-block", cfg.reverseBlock)
+	}
+	if reverse {
+		args = append(args, "--reverse")
+	}
+	return args
+}
+
+func blockLabel(value string, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+// validateBlockFlags checks block sizes once at startup, so a typo stops the
+// runner immediately instead of failing and deferring every ZIP in the queue.
+func validateBlockFlags(cfg *config) error {
+	for _, block := range []struct {
+		name  string
+		value *string
+	}{
+		{"rescue-coarse-block", &cfg.coarseBlock},
+		{"rescue-reverse-block", &cfg.reverseBlock},
+	} {
+		*block.value = strings.TrimSpace(*block.value)
+		if *block.value == "" {
+			continue
+		}
+		if _, err := blocksize.Parse(*block.value); err != nil {
+			return fmt.Errorf("%s: %w", block.name, err)
+		}
+	}
+	return nil
+}
+
 func runRescueCommand(
 	ctx context.Context,
 	cfg config,
@@ -495,23 +553,20 @@ func runRescueCommand(
 	if statePhase != "" {
 		mode = "resume-" + statePhase
 	}
-	args := []string{
-		"--source", source,
-		"--target", target,
-		"--read-timeout", cfg.readTimeout.String(),
-	}
+	args := buildRescueArgs(cfg, source, target, reverse)
 	if reverse {
-		args = append(args, "--reverse")
 		mode = "reverse"
 	}
 	fmt.Fprintf(
 		out,
-		"RESCUE attempt=%d mode=%s stall_limit=%s zip_limit=%s read_timeout=%s\n",
+		"RESCUE attempt=%d mode=%s stall_limit=%s zip_limit=%s read_timeout=%s coarse_block=%s reverse_block=%s\n",
 		job.Attempt,
 		mode,
 		cfg.stallLimit,
 		cfg.zipLimit,
 		cfg.readTimeout,
+		blockLabel(cfg.coarseBlock, blocksize.Default),
+		blockLabel(cfg.reverseBlock, blockLabel(cfg.coarseBlock, blocksize.Default)),
 	)
 	fmt.Fprintf(out, "RUN %s %s\n", cfg.rescueTool, strings.Join(args, " "))
 	command := exec.Command(cfg.rescueTool, args...)

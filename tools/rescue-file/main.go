@@ -9,18 +9,16 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/Terru03/google-photos-takeout-helper/tools/internal/blocksize"
 )
 
 const (
-	defaultBlockSize = "64M"
-	minBlockSize     = int64(64 * 1024)
-	maxBlockSize     = int64(1024 * 1024 * 1024)
-	saveEvery        = int64(256 * 1024 * 1024)
+	saveEvery = int64(256 * 1024 * 1024)
 )
 
 // blockSizes sets the read size for the first-pass coarse and reverse copies.
@@ -33,52 +31,15 @@ type blockSizes struct {
 	reverse int64
 }
 
-// parseBlockSize accepts a byte count with an optional binary suffix:
-// "65536", "64K", "64KiB", "4M", "64MB", "1G". Sizes must be a multiple of
-// 512 bytes and between 64 KiB and 1 GiB.
-func parseBlockSize(value string) (int64, error) {
-	text := strings.ToUpper(strings.TrimSpace(value))
-	multiplier := int64(1)
-	for _, unit := range []struct {
-		suffix string
-		scale  int64
-	}{
-		{"KIB", 1 << 10}, {"MIB", 1 << 20}, {"GIB", 1 << 30},
-		{"KB", 1 << 10}, {"MB", 1 << 20}, {"GB", 1 << 30},
-		{"K", 1 << 10}, {"M", 1 << 20}, {"G", 1 << 30},
-	} {
-		if strings.HasSuffix(text, unit.suffix) {
-			text = strings.TrimSpace(strings.TrimSuffix(text, unit.suffix))
-			multiplier = unit.scale
-			break
-		}
-	}
-	number, err := strconv.ParseInt(text, 10, 64)
-	if err != nil || number <= 0 {
-		return 0, fmt.Errorf("invalid block size %q: use bytes or a K/M/G suffix, such as 64K or 64M", value)
-	}
-	if number > maxBlockSize/multiplier {
-		return 0, fmt.Errorf("block size %q is larger than 1G", value)
-	}
-	size := number * multiplier
-	if size < minBlockSize || size > maxBlockSize {
-		return 0, fmt.Errorf("block size %q must be between 64K and 1G", value)
-	}
-	if size%512 != 0 {
-		return 0, fmt.Errorf("block size %q must be a multiple of 512 bytes", value)
-	}
-	return size, nil
-}
-
 func parseBlockSizes(coarseValue, reverseValue string) (blockSizes, error) {
-	coarse, err := parseBlockSize(coarseValue)
+	coarse, err := blocksize.Parse(coarseValue)
 	if err != nil {
 		return blockSizes{}, fmt.Errorf("-coarse-block: %w", err)
 	}
 	if strings.TrimSpace(reverseValue) == "" {
 		return blockSizes{coarse: coarse, reverse: coarse}, nil
 	}
-	reverse, err := parseBlockSize(reverseValue)
+	reverse, err := blocksize.Parse(reverseValue)
 	if err != nil {
 		return blockSizes{}, fmt.Errorf("-reverse-block: %w", err)
 	}
@@ -126,7 +87,7 @@ func main() {
 	stateArg := flag.String("state", "", "state file")
 	reverseArg := flag.Bool("reverse", false, "copy remaining bytes from end to front")
 	readTimeoutArg := flag.Duration("read-timeout", 5*time.Second, "max time for one source read")
-	coarseBlockArg := flag.String("coarse-block", defaultBlockSize, "first-pass read size, 64K to 1G (use 64K for badly damaged disks)")
+	coarseBlockArg := flag.String("coarse-block", blocksize.Default, "first-pass read size, 64K to 1G (use 64K for badly damaged disks)")
 	reverseBlockArg := flag.String("reverse-block", "", "reverse-pass read size, 64K to 1G (default: same as -coarse-block)")
 	flag.Parse()
 

@@ -253,3 +253,43 @@ type ioDiscard struct{}
 func (ioDiscard) Write(buffer []byte) (int, error) {
 	return len(buffer), nil
 }
+
+func TestRescueArgsUseRescueFileDefaultBlocksWhenUnset(t *testing.T) {
+	cfg := config{readTimeout: 90 * time.Second}
+	args := buildRescueArgs(cfg, `F:\in.zip`, `G:\out.zip`, false)
+	want := []string{"--source", `F:\in.zip`, "--target", `G:\out.zip`, "--read-timeout", "1m30s"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+}
+
+func TestRescueArgsForwardBlockSizes(t *testing.T) {
+	cfg := config{readTimeout: 90 * time.Second, coarseBlock: "64K", reverseBlock: "4M"}
+	args := buildRescueArgs(cfg, `F:\in.zip`, `G:\out.zip`, true)
+	want := []string{
+		"--source", `F:\in.zip`,
+		"--target", `G:\out.zip`,
+		"--read-timeout", "1m30s",
+		"--coarse-block", "64K",
+		"--reverse-block", "4M",
+		"--reverse",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+}
+
+func TestValidateBlockFlags(t *testing.T) {
+	cfg := config{coarseBlock: " 64K ", reverseBlock: ""}
+	if err := validateBlockFlags(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.coarseBlock != "64K" {
+		t.Fatalf("coarse block not trimmed: %q", cfg.coarseBlock)
+	}
+	for _, bad := range []config{{coarseBlock: "4K"}, {reverseBlock: "64X"}, {coarseBlock: "2G"}} {
+		if err := validateBlockFlags(&bad); err == nil {
+			t.Fatalf("invalid block flags accepted: %#v", bad)
+		}
+	}
+}
