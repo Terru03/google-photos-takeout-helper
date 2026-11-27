@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -16,10 +17,73 @@ import (
 )
 
 const (
-	coarseBlock  = int64(64 * 1024 * 1024)
-	reverseBlock = int64(64 * 1024 * 1024)
-	saveEvery    = int64(256 * 1024 * 1024)
+	defaultBlockSize = "64M"
+	minBlockSize     = int64(64 * 1024)
+	maxBlockSize     = int64(1024 * 1024 * 1024)
+	saveEvery        = int64(256 * 1024 * 1024)
 )
+
+// blockSizes sets the read size for the first-pass coarse and reverse copies.
+// Large blocks amortize slow-disk read latency; small blocks lose less data per
+// failed read on badly damaged zones. Bad ranges are always re-read by the
+// refine passes at 64 KiB, 4 KiB and 512 bytes, so changing these between
+// resumed runs is safe.
+type blockSizes struct {
+	coarse  int64
+	reverse int64
+}
+
+// parseBlockSize accepts a byte count with an optional binary suffix:
+// "65536", "64K", "64KiB", "4M", "64MB", "1G". Sizes must be a multiple of
+// 512 bytes and between 64 KiB and 1 GiB.
+func parseBlockSize(value string) (int64, error) {
+	text := strings.ToUpper(strings.TrimSpace(value))
+	multiplier := int64(1)
+	for _, unit := range []struct {
+		suffix string
+		scale  int64
+	}{
+		{"KIB", 1 << 10}, {"MIB", 1 << 20}, {"GIB", 1 << 30},
+		{"KB", 1 << 10}, {"MB", 1 << 20}, {"GB", 1 << 30},
+		{"K", 1 << 10}, {"M", 1 << 20}, {"G", 1 << 30},
+	} {
+		if strings.HasSuffix(text, unit.suffix) {
+			text = strings.TrimSpace(strings.TrimSuffix(text, unit.suffix))
+			multiplier = unit.scale
+			break
+		}
+	}
+	number, err := strconv.ParseInt(text, 10, 64)
+	if err != nil || number <= 0 {
+		return 0, fmt.Errorf("invalid block size %q: use bytes or a K/M/G suffix, such as 64K or 64M", value)
+	}
+	if number > maxBlockSize/multiplier {
+		return 0, fmt.Errorf("block size %q is larger than 1G", value)
+	}
+	size := number * multiplier
+	if size < minBlockSize || size > maxBlockSize {
+		return 0, fmt.Errorf("block size %q must be between 64K and 1G", value)
+	}
+	if size%512 != 0 {
+		return 0, fmt.Errorf("block size %q must be a multiple of 512 bytes", value)
+	}
+	return size, nil
+}
+
+func parseBlockSizes(coarseValue, reverseValue string) (blockSizes, error) {
+	coarse, err := parseBlockSize(coarseValue)
+	if err != nil {
+		return blockSizes{}, fmt.Errorf("-coarse-block: %w", err)
+	}
+	if strings.TrimSpace(reverseValue) == "" {
+		return blockSizes{coarse: coarse, reverse: coarse}, nil
+	}
+	reverse, err := parseBlockSize(reverseValue)
+	if err != nil {
+		return blockSizes{}, fmt.Errorf("-reverse-block: %w", err)
+	}
+	return blockSizes{coarse: coarse, reverse: reverse}, nil
+}
 
 type sourceReader interface {
 	io.ReaderAt
@@ -62,10 +126,16 @@ func main() {
 	stateArg := flag.String("state", "", "state file")
 	reverseArg := flag.Bool("reverse", false, "copy remaining bytes from end to front")
 	readTimeoutArg := flag.Duration("read-timeout", 5*time.Second, "max time for one source read")
+	coarseBlockArg := flag.String("coarse-block", defaultBlockSize, "first-pass read size, 64K to 1G (use 64K for badly damaged disks)")
+	reverseBlockArg := flag.String("reverse-block", "", "reverse-pass read size, 64K to 1G (default: same as -coarse-block)")
 	flag.Parse()
 
 	if *sourceArg == "" || *targetArg == "" {
 		fail("source and target are required")
+	}
+	blocks, err := parseBlockSizes(*coarseBlockArg, *reverseBlockArg)
+	if err != nil {
+		fail(err.Error())
 	}
 
 	source, err := filepath.Abs(*sourceArg)
@@ -94,7 +164,7 @@ func main() {
 	check(err)
 	defer src.Close()
 
-	state, resumed, err := loadOrMakeState(statePath, source, target, sourceInfo)
+	state, resumed, err := loadOrMakeState(statePath, source, target, sourceInfo, blocks.coarse)
 	check(err)
 	if *reverseArg {
 		if state.Phase != "coarse" && state.Phase != "reverse" {
@@ -128,7 +198,7 @@ func main() {
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	check(err)
 	defer logFile.Close()
-	logLine(logFile, "start source=%q target=%q size=%d resumed=%t phase=%s", source, target, sourceInfo.Size(), resumed, state.Phase)
+	logLine(logFile, "start source=%q target=%q size=%d resumed=%t phase=%s coarse_block=%d reverse_block=%d", source, target, sourceInfo.Size(), resumed, state.Phase, blocks.coarse, blocks.reverse)
 
 	var progress progressState
 	progress.phase.Store(state.Phase)
@@ -148,7 +218,7 @@ func main() {
 		fmt.Println("Stop asked. Save state after current read.")
 	}()
 
-	err = runRescue(src, dst, statePath, logFile, state, &progress, &stopAsked)
+	err = runRescue(src, dst, statePath, logFile, state, &progress, &stopAsked, blocks)
 	close(stop)
 	<-done
 	if err != nil {
@@ -168,14 +238,14 @@ func main() {
 	fmt.Printf("Log: %s\n", logPath)
 }
 
-func runRescue(src sourceReader, dst *os.File, statePath string, logFile *os.File, state *rescueState, progress *progressState, stopAsked *atomic.Bool) error {
+func runRescue(src sourceReader, dst *os.File, statePath string, logFile *os.File, state *rescueState, progress *progressState, stopAsked *atomic.Bool, blocks blockSizes) error {
 	if state.Phase == "coarse" {
-		if err := runCoarse(src, dst, statePath, logFile, state, progress, stopAsked); err != nil {
+		if err := runCoarse(src, dst, statePath, logFile, state, progress, stopAsked, blocks.coarse); err != nil {
 			return err
 		}
 	}
 	if state.Phase == "reverse" {
-		if err := runReverse(src, dst, statePath, logFile, state, progress, stopAsked); err != nil {
+		if err := runReverse(src, dst, statePath, logFile, state, progress, stopAsked, blocks.reverse); err != nil {
 			return err
 		}
 	}
@@ -194,7 +264,7 @@ func runRescue(src sourceReader, dst *os.File, statePath string, logFile *os.Fil
 	return nil
 }
 
-func runReverse(src sourceReader, dst *os.File, statePath string, logFile *os.File, state *rescueState, progress *progressState, stopAsked *atomic.Bool) error {
+func runReverse(src sourceReader, dst *os.File, statePath string, logFile *os.File, state *rescueState, progress *progressState, stopAsked *atomic.Bool, reverseBlock int64) error {
 	if state.ReverseOffset == 0 {
 		state.ReverseOffset = state.SourceSize
 	}
@@ -255,7 +325,7 @@ func runReverse(src sourceReader, dst *os.File, statePath string, logFile *os.Fi
 	return saveState(statePath, state)
 }
 
-func runCoarse(src sourceReader, dst *os.File, statePath string, logFile *os.File, state *rescueState, progress *progressState, stopAsked *atomic.Bool) error {
+func runCoarse(src sourceReader, dst *os.File, statePath string, logFile *os.File, state *rescueState, progress *progressState, stopAsked *atomic.Bool, coarseBlock int64) error {
 	buf := make([]byte, coarseBlock)
 	zero := make([]byte, coarseBlock)
 	lastSave := state.Offset
@@ -398,7 +468,7 @@ func runRefine(src sourceReader, dst *os.File, statePath string, logFile *os.Fil
 	return saveState(statePath, state)
 }
 
-func loadOrMakeState(path, source, target string, sourceInfo os.FileInfo) (*rescueState, bool, error) {
+func loadOrMakeState(path, source, target string, sourceInfo os.FileInfo, coarseBlock int64) (*rescueState, bool, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return &rescueState{

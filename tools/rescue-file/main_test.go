@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -39,12 +40,16 @@ func TestRunCoarseAmortizesSlowReadLatency(t *testing.T) {
 	}
 	defer logFile.Close()
 
+	defaultBlocks, err := parseBlockSizes(defaultBlockSize, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	source := &countingSource{}
 	state := &rescueState{
 		Version:    1,
 		SourceSize: sourceSize,
 		Phase:      "coarse",
-		BlockSize:  coarseBlock,
+		BlockSize:  defaultBlocks.coarse,
 	}
 	var progress progressState
 	var stopAsked atomic.Bool
@@ -57,6 +62,7 @@ func TestRunCoarseAmortizesSlowReadLatency(t *testing.T) {
 		state,
 		&progress,
 		&stopAsked,
+		defaultBlocks.coarse,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -64,5 +70,141 @@ func TestRunCoarseAmortizesSlowReadLatency(t *testing.T) {
 
 	if source.readCalls != 1 {
 		t.Fatalf("coarse rescue made %d reads for 8 MiB; want 1 large read", source.readCalls)
+	}
+}
+
+func TestParseBlockSize(t *testing.T) {
+	valid := map[string]int64{
+		"65536":  64 * 1024,
+		"64K":    64 * 1024,
+		"64k":    64 * 1024,
+		"64KiB":  64 * 1024,
+		"64 KB":  64 * 1024,
+		"4M":     4 * 1024 * 1024,
+		"64MB":   64 * 1024 * 1024,
+		" 64m ":  64 * 1024 * 1024,
+		"1G":     1024 * 1024 * 1024,
+		"1536K":  1536 * 1024,
+		"131072": 128 * 1024,
+	}
+	for input, want := range valid {
+		got, err := parseBlockSize(input)
+		if err != nil || got != want {
+			t.Errorf("parseBlockSize(%q) = %d, %v; want %d", input, got, err, want)
+		}
+	}
+	for _, input := range []string{"", "0", "-64K", "abc", "64X", "4K", "2G", "65537", "9999999999G"} {
+		if got, err := parseBlockSize(input); err == nil {
+			t.Errorf("parseBlockSize(%q) = %d; want error", input, got)
+		}
+	}
+}
+
+func TestParseBlockSizesReverseDefaultsToCoarse(t *testing.T) {
+	blocks, err := parseBlockSizes("64K", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocks.coarse != 64*1024 || blocks.reverse != 64*1024 {
+		t.Fatalf("unexpected blocks: %#v", blocks)
+	}
+	blocks, err = parseBlockSizes("64M", "4M")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocks.coarse != 64*1024*1024 || blocks.reverse != 4*1024*1024 {
+		t.Fatalf("unexpected blocks: %#v", blocks)
+	}
+	if _, err := parseBlockSizes("64M", "1K"); err == nil {
+		t.Fatal("invalid reverse block was accepted")
+	}
+}
+
+// failingSource fails every read that touches [badStart, badStart+badSize).
+type failingSource struct {
+	badStart  int64
+	badSize   int64
+	readCalls int
+}
+
+func (source *failingSource) ReadAt(buffer []byte, offset int64) (int, error) {
+	source.readCalls++
+	end := offset + int64(len(buffer))
+	if offset < source.badStart+source.badSize && end > source.badStart {
+		return 0, errors.New("simulated bad sector")
+	}
+	for index := range buffer {
+		buffer[index] = 0xAB
+	}
+	return len(buffer), nil
+}
+
+func (source *failingSource) Close() error {
+	return nil
+}
+
+func runCoarseForTest(t *testing.T, source sourceReader, sourceSize int64, block int64) (*rescueState, *os.File) {
+	t.Helper()
+	tempDir := t.TempDir()
+	target, err := os.Create(filepath.Join(tempDir, "recovered.zip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+	if err := target.Truncate(sourceSize); err != nil {
+		t.Fatal(err)
+	}
+	logFile, err := os.Create(filepath.Join(tempDir, "rescue.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = logFile.Close() })
+	state := &rescueState{Version: 1, SourceSize: sourceSize, Phase: "coarse", BlockSize: block}
+	var progress progressState
+	var stopAsked atomic.Bool
+	if err := runCoarse(source, target, filepath.Join(tempDir, "state.json"), logFile, state, &progress, &stopAsked, block); err != nil {
+		t.Fatal(err)
+	}
+	return state, target
+}
+
+func TestRunCoarseSmallBlockLimitsBadRangeSize(t *testing.T) {
+	const sourceSize = int64(8 * 1024 * 1024)
+	const smallBlock = int64(64 * 1024)
+	// One bad 512-byte sector in the middle of the source.
+	source := &failingSource{badStart: 3*1024*1024 + 100, badSize: 512}
+
+	state, _ := runCoarseForTest(t, source, sourceSize, smallBlock)
+
+	if source.readCalls != int(sourceSize/smallBlock) {
+		t.Fatalf("made %d reads; want %d", source.readCalls, sourceSize/smallBlock)
+	}
+	if len(state.Ranges) != 1 || state.Ranges[0].Size != smallBlock || state.Ranges[0].Start != 3*1024*1024 {
+		t.Fatalf("bad range = %#v; want one 64 KiB range at 3 MiB", state.Ranges)
+	}
+}
+
+func TestRunCoarseLargeBlockMarksWholeBlockForRefine(t *testing.T) {
+	const sourceSize = int64(8 * 1024 * 1024)
+	const largeBlock = int64(4 * 1024 * 1024)
+	source := &failingSource{badStart: 3*1024*1024 + 100, badSize: 512}
+
+	state, target := runCoarseForTest(t, source, sourceSize, largeBlock)
+
+	if len(state.Ranges) != 1 || state.Ranges[0].Size != largeBlock || state.Ranges[0].Start != 0 {
+		t.Fatalf("bad range = %#v; want the whole first 4 MiB block", state.Ranges)
+	}
+	// The good second block must be copied intact.
+	buffer := make([]byte, 16)
+	if _, err := target.ReadAt(buffer, 6*1024*1024); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range buffer {
+		if value != 0xAB {
+			t.Fatalf("good block was not copied: %x", buffer)
+		}
+	}
+	if state.Phase != "refine" || state.BlockSize != 64*1024 {
+		t.Fatalf("coarse pass did not hand off to 64 KiB refine: phase=%s block=%d", state.Phase, state.BlockSize)
 	}
 }
