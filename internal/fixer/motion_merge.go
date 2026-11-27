@@ -39,6 +39,10 @@ type MotionMergeItem struct {
 	Error           string        `json:"error,omitempty"`
 	Duration        time.Duration `json:"duration"`
 	UpdatedAt       time.Time     `json:"updatedAt"`
+	StillSize       int64         `json:"stillSize,omitempty"`
+	StillModTime    int64         `json:"stillModTimeUnixNano,omitempty"`
+	VideoSize       int64         `json:"videoSize,omitempty"`
+	VideoModTime    int64         `json:"videoModTimeUnixNano,omitempty"`
 }
 
 type MotionMergeReport struct {
@@ -56,6 +60,8 @@ type MotionMergeReport struct {
 	SkippedMissingVideo     int               `json:"skippedMissingVideo"`
 	FailedMotionPhotoCalls  int               `json:"failedMotionPhoto2Calls"`
 	TimedOutMerges          int               `json:"timedOutMerges"`
+	Completed               bool              `json:"completed"`
+	Error                   string            `json:"error,omitempty"`
 	Items                   []MotionMergeItem `json:"items"`
 }
 
@@ -63,6 +69,8 @@ type motionMergeCandidate struct {
 	key       string
 	stillPath string
 	videoPath string
+	// legacyKeys are state keys written by older builds for this same pair.
+	legacyKeys []string
 }
 
 const (
@@ -75,7 +83,7 @@ const (
 	motionMergeStatusPreviousFailure = "skipped-previous-failure"
 )
 
-func MergeMotionLibrary(ctx context.Context, options MotionMergeOptions) (MotionMergeReport, error) {
+func MergeMotionLibrary(ctx context.Context, options MotionMergeOptions) (report MotionMergeReport, err error) {
 	started := time.Now().UTC()
 	libraryRoot, err := filepath.Abs(strings.TrimSpace(options.LibraryRoot))
 	if err != nil {
@@ -100,13 +108,26 @@ func MergeMotionLibrary(ctx context.Context, options MotionMergeOptions) (Motion
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
 		return MotionMergeReport{}, err
 	}
-	report := MotionMergeReport{
+	report = MotionMergeReport{
 		StartedAt:   started,
 		LibraryRoot: libraryRoot,
 		ToolPath:    toolPath,
 		ReportPath:  filepath.Join(reportDir, "motion-merge-report.json"),
 		StatePath:   filepath.Join(libraryRoot, ".gtf", "motion-merge-state.jsonl"),
 	}
+	// Write a partial report when the pass stops early (cancel, I/O error),
+	// so the report on disk never describes an older run.
+	defer func() {
+		if err == nil {
+			return
+		}
+		report.FinishedAt = time.Now().UTC()
+		report.Completed = false
+		report.Error = err.Error()
+		if writeErr := writeMotionMergeReport(report); writeErr != nil {
+			err = errors.Join(err, writeErr)
+		}
+	}()
 
 	candidates, err := discoverMotionMergeCandidates(libraryRoot)
 	if err != nil {
@@ -136,26 +157,47 @@ func MergeMotionLibrary(ctx context.Context, options MotionMergeOptions) (Motion
 			UpdatedAt:       time.Now().UTC(),
 		}
 
-		if previousItem, ok := previous[candidate.key]; ok {
+		if previousItem, ok := lookupMotionMergeState(previous, candidate); ok {
+			// Records from older builds carry no file fingerprint. Trust their
+			// status instead of re-running MotionPhoto2 on every pair, and
+			// record the current fingerprint so later runs can detect changes.
+			legacy := !motionMergeHasFileState(previousItem)
+			unchanged := legacy || motionMergeFilesMatch(previousItem, candidate)
+			skipped := false
 			switch previousItem.Status {
 			case motionMergeStatusMerged, motionMergeStatusAlreadyMerged:
-				item.Status = motionMergeStatusAlreadyMerged
-				report.SkippedAlreadyMerged++
-				report.Items = append(report.Items, item)
-				emitMotionMergeProgress(options, index+1, len(candidates), item)
-				continue
+				if unchanged {
+					item.Status = motionMergeStatusAlreadyMerged
+					report.SkippedAlreadyMerged++
+					skipped = true
+				}
 			case motionMergeStatusFailed, motionMergeStatusTimedOut:
-				if !options.RetryFailed {
+				if !options.RetryFailed && unchanged {
 					item.Status = motionMergeStatusPreviousFailure
 					item.Error = previousItem.Error
 					report.SkippedPreviousFailures++
-					report.Items = append(report.Items, item)
-					emitMotionMergeProgress(options, index+1, len(candidates), item)
-					continue
+					skipped = true
 				}
+			}
+			if skipped {
+				if legacy {
+					captureMotionMergeFileState(&item, candidate)
+					if err := appendMotionMergeState(stateWriter, item); err != nil {
+						return report, err
+					}
+					if err := stateWriter.Flush(); err != nil {
+						return report, err
+					}
+				} else {
+					copyMotionMergeFileState(&item, previousItem)
+				}
+				report.Items = append(report.Items, item)
+				emitMotionMergeProgress(options, index+1, len(candidates), item)
+				continue
 			}
 		}
 
+		ranTool := false
 		switch {
 		case candidate.stillPath == "" || !FileExists(candidate.stillPath):
 			item.Status = motionMergeStatusMissingStill
@@ -164,21 +206,23 @@ func MergeMotionLibrary(ctx context.Context, options MotionMergeOptions) (Motion
 			item.Status = motionMergeStatusMissingVideo
 			report.SkippedMissingVideo++
 		default:
+			ranTool = true
 			runStarted := time.Now()
-			pairCtx, cancel := context.WithTimeout(ctx, options.Timeout)
-			output, runErr := newHiddenCommandContext(
-				pairCtx,
+			output, runErr, timedOut := runHiddenCommandWithTimeout(
+				ctx,
+				options.Timeout,
 				toolPath,
 				"--input-image", candidate.stillPath,
 				"--input-video", candidate.videoPath,
 				"--overwrite",
-			).CombinedOutput()
-			cancel()
+			)
 			item.Duration = time.Since(runStarted)
 			outputText := strings.TrimSpace(string(output))
 			logMotionPhotoOutput(outputText)
 			switch {
-			case errors.Is(pairCtx.Err(), context.DeadlineExceeded):
+			case ctx.Err() != nil:
+				return report, ctx.Err()
+			case timedOut:
 				item.Status = motionMergeStatusTimedOut
 				item.Error = fmt.Sprintf("motionphoto2 timed out after %s", options.Timeout)
 				report.TimedOutMerges++
@@ -197,6 +241,7 @@ func MergeMotionLibrary(ctx context.Context, options MotionMergeOptions) (Motion
 				item.Status = motionMergeStatusMerged
 				report.MergedSuccessfully++
 			}
+			captureMotionMergeFileState(&item, candidate)
 		}
 
 		item.UpdatedAt = time.Now().UTC()
@@ -204,8 +249,13 @@ func MergeMotionLibrary(ctx context.Context, options MotionMergeOptions) (Motion
 		if err := appendMotionMergeState(stateWriter, item); err != nil {
 			return report, err
 		}
-		if (index+1)%32 == 0 {
-			if err := stateWriter.Flush(); err != nil {
+		// Persist every result immediately: a crash must never forget a
+		// finished merge, or the next run would merge that pair again.
+		if err := stateWriter.Flush(); err != nil {
+			return report, err
+		}
+		if ranTool {
+			if err := stateFile.Sync(); err != nil {
 				return report, err
 			}
 		}
@@ -219,6 +269,7 @@ func MergeMotionLibrary(ctx context.Context, options MotionMergeOptions) (Motion
 		return report, err
 	}
 	report.FinishedAt = time.Now().UTC()
+	report.Completed = true
 	if err := writeMotionMergeReport(report); err != nil {
 		return report, err
 	}
@@ -280,9 +331,10 @@ func discoverMotionMergeCandidates(libraryRoot string) ([]motionMergeCandidate, 
 			}
 			seenPaths[pathKey] = struct{}{}
 			candidates = append(candidates, motionMergeCandidate{
-				key:       motionPairStateKey(stillRecord, videoRecord),
-				stillPath: stillPath,
-				videoPath: videoPath,
+				key:        "path|" + pathKey,
+				stillPath:  stillPath,
+				videoPath:  videoPath,
+				legacyKeys: []string{legacyMotionPairStateKey(stillRecord, videoRecord)},
 			})
 		}
 	}
@@ -363,12 +415,64 @@ func expectedMotionOutputPath(record ProcessRecord, partner ProcessRecord) strin
 	return record.SourcePath
 }
 
-func motionPairStateKey(still ProcessRecord, video ProcessRecord) string {
+func motionPairPathKey(stillPath string, videoPath string) string {
+	return strings.ToLower(filepath.Clean(stillPath) + "|" + filepath.Clean(videoPath))
+}
+
+func captureMotionMergeFileState(item *MotionMergeItem, candidate motionMergeCandidate) {
+	stillInfo, stillErr := os.Stat(candidate.stillPath)
+	videoInfo, videoErr := os.Stat(candidate.videoPath)
+	if stillErr != nil || videoErr != nil {
+		return
+	}
+	item.StillSize = stillInfo.Size()
+	item.StillModTime = stillInfo.ModTime().UnixNano()
+	item.VideoSize = videoInfo.Size()
+	item.VideoModTime = videoInfo.ModTime().UnixNano()
+}
+
+// legacyMotionPairStateKey is the key format older builds used for pairs
+// found through state.jsonl. It is only read, never written.
+func legacyMotionPairStateKey(still ProcessRecord, video ProcessRecord) string {
 	return "state|" + strings.ToLower(still.SourceID+"|"+still.SourceRelPath+"|"+video.SourceRelPath)
 }
 
-func motionPairPathKey(stillPath string, videoPath string) string {
-	return strings.ToLower(filepath.Clean(stillPath) + "|" + filepath.Clean(videoPath))
+func lookupMotionMergeState(previous map[string]MotionMergeItem, candidate motionMergeCandidate) (MotionMergeItem, bool) {
+	if item, ok := previous[candidate.key]; ok {
+		return item, true
+	}
+	for _, key := range candidate.legacyKeys {
+		if item, ok := previous[key]; ok {
+			return item, true
+		}
+	}
+	return MotionMergeItem{}, false
+}
+
+func motionMergeHasFileState(item MotionMergeItem) bool {
+	return item.StillModTime != 0 && item.VideoModTime != 0
+}
+
+func motionMergeFilesMatch(item MotionMergeItem, candidate motionMergeCandidate) bool {
+	if !motionMergeHasFileState(item) {
+		return false
+	}
+	stillInfo, stillErr := os.Stat(candidate.stillPath)
+	videoInfo, videoErr := os.Stat(candidate.videoPath)
+	if stillErr != nil || videoErr != nil {
+		return false
+	}
+	return item.StillSize == stillInfo.Size() &&
+		item.StillModTime == stillInfo.ModTime().UnixNano() &&
+		item.VideoSize == videoInfo.Size() &&
+		item.VideoModTime == videoInfo.ModTime().UnixNano()
+}
+
+func copyMotionMergeFileState(target *MotionMergeItem, source MotionMergeItem) {
+	target.StillSize = source.StillSize
+	target.StillModTime = source.StillModTime
+	target.VideoSize = source.VideoSize
+	target.VideoModTime = source.VideoModTime
 }
 
 func readMotionMergeState(path string) map[string]MotionMergeItem {
